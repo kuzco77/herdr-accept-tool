@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from auto_accept import DEFAULT_PREFER, choose_option, keys_for, parse_prompt  # noqa: E402
+from herdr_accept_tool import DEFAULT_PREFER, choose_option, keys_for, parse_prompt  # noqa: E402
 
 PREFER = re.compile(DEFAULT_PREFER)
 

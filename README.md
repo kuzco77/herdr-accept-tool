@@ -1,4 +1,4 @@
-# auto-accept-tool
+# herdr-accept-tool
 
 Auto-answer interactive prompts in a herdr agent pane. Give it a herdr agent
 name or pane id; whenever that pane shows a numbered choice dialog it picks an
@@ -34,30 +34,30 @@ lists in normal assistant output never trigger a key press.
 ## Install (global command)
 
 ```bash
-git clone https://github.com/kuzco77/auto-accept-tool.git ~/Developer/Personal/auto-accept-tool
-ln -s ~/Developer/Personal/auto-accept-tool/auto_accept.py ~/.local/bin/herdr-auto-accept
+git clone https://github.com/kuzco77/herdr-accept-tool.git ~/Developer/Personal/herdr-accept-tool
+ln -s ~/Developer/Personal/herdr-accept-tool/herdr_accept_tool.py ~/.local/bin/herdr-accept-tool
 ```
 
-`~/.local/bin` must be on `PATH`. After that `herdr-auto-accept <target>` works
+`~/.local/bin` must be on `PATH`. After that `herdr-accept-tool <target>` works
 from any directory.
 
 ## Usage
 
 ```bash
 # by pane id
-./auto_accept.py w26:p42
+./herdr_accept_tool.py w26:p42
 
 # by agent name (set with: herdr agent rename <pane> my-agent)
-./auto_accept.py my-agent
+./herdr_accept_tool.py my-agent
 
 # answer one prompt and exit
-./auto_accept.py my-agent --once
+./herdr_accept_tool.py my-agent --once
 
 # only log what it would press
-./auto_accept.py my-agent --dry-run
+./herdr_accept_tool.py my-agent --dry-run
 
 # stop after 30 minutes
-./auto_accept.py my-agent --timeout 1800
+./herdr_accept_tool.py my-agent --timeout 1800
 ```
 
 Runs until the pane closes, `--timeout` elapses, or Ctrl-C. Exit code 2 means
@@ -91,7 +91,7 @@ stops the same dialog being answered twice within `--cooldown`.
 - Free-text questions (`Type something`) are never chosen; the agent still
   gets the first real option.
 - Rendering changes in Claude Code or other agents may need the regexes in
-  `auto_accept.py` updated. Sample screens live in `tests/test_parse.py`.
+  `herdr_accept_tool.py` updated. Sample screens live in `tests/test_parse.py`.
 
 ## Tests
 

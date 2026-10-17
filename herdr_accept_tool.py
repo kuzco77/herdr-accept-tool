@@ -2,7 +2,7 @@
 """Auto-answer interactive prompts in a herdr-managed agent pane.
 
 Usage:
-    auto_accept.py <agent-name|pane-id> [options]
+    herdr-accept-tool <agent-name|pane-id> [options]
 
 Polls the pane screen through the herdr CLI. When a numbered choice dialog
 is on screen (Claude Code permission prompt, AskUserQuestion, plan approval,
@@ -244,7 +244,7 @@ def watch(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="auto_accept.py",
+        prog="herdr-accept-tool",
         description="Auto-answer Yes / Recommended / first option in a herdr agent pane.",
     )
     parser.add_argument("target", help="herdr agent name or pane id (e.g. w26:p42)")
