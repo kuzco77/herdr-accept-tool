@@ -144,6 +144,15 @@ command = "herdr-accept-tool.disarm-all"
 description = "auto-accept: off everywhere"
 ```
 
+The `⚡` marker lives on the pane border label. With herdr's default
+`ui.pane_borders = "auto"` a tab with a single pane draws no border, so the
+marker is invisible there. Show borders always to see it on every pane:
+
+```toml
+[ui]
+pane_borders = "always"
+```
+
 ### Safety rules in the supervisor
 
 - A pane only gets key presses while its foreground process is a known agent
