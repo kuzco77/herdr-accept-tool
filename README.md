@@ -1,8 +1,8 @@
 # herdr-accept-tool
 
 Auto-answer interactive prompts in a herdr agent pane. Give it a herdr agent
-name or pane id; whenever that pane shows a numbered choice dialog it picks an
-option and confirms it.
+name or pane id; whenever that pane shows a choice dialog it picks an option
+and confirms it. Works with Claude Code and Antigravity CLI (`agy`).
 
 Choice order per dialog:
 
@@ -23,13 +23,29 @@ Handled dialogs (verified with Claude Code 2.1.301 inside herdr):
 - `AskUserQuestion` multi-select: ticks the chosen option, then presses Tab to
   move on
 
-Anything without a `❯` cursor on a `1.` … `N.` list is ignored, so numbered
-lists in normal assistant output never trigger a key press.
+Handled dialogs (verified with Antigravity CLI 1.2.14 inside herdr):
+
+- folder trust on startup (`Yes, I trust this folder`)
+- tool permission prompts: shell (`Run this command?`), file create / edit
+  (`Allow creation of this file?`) → first Yes
+- `ask_question` single-select, multi-question sets (`Question 1/2 …`)
+- `ask_question` multi-select: ticks the chosen option with Space, then
+  presses Enter to submit
+- `/artifact` review panel while an item shows `Action required`: presses
+  `y` to approve the highlighted artifact (plan mode)
+
+The agent is detected from the cursor glyph: Claude Code draws `❯`,
+Antigravity draws `>` (and `›` in the artifact panel). Anything without a
+cursor on a `1.` … `N.` list is ignored, so numbered lists in normal assistant
+output never trigger a key press. Antigravity's un-numbered trust dialog is
+only accepted when a `↑/↓ Navigate` hint follows it, which keeps echoed user
+input (`> …`) and answered-question summaries from being treated as prompts.
 
 ## Requirements
 
 - Python 3.9+ (stdlib only)
 - `herdr` on `PATH`, run from a shell inside herdr (`HERDR_ENV=1`)
+- a Claude Code or Antigravity CLI session running in the target pane
 
 ## Install (global command)
 
@@ -79,10 +95,12 @@ Options:
 ## How it works
 
 Each poll runs `herdr pane read <pane> --source visible`, parses the bottom
-numbered list with its `❯` cursor, picks an option, and sends `Down`/`Up` to
-reach it plus `Enter` through `herdr pane send-keys`. For a ticked multi-select
-checkbox it sends `Tab` instead. A fingerprint of question + option labels
-stops the same dialog being answered twice within `--cooldown`.
+choice list with its cursor (`❯` or `>`), picks an option, and sends
+`Down`/`Up` to reach it plus `Enter` through `herdr pane send-keys`.
+Multi-select takes two polls: Claude Code gets `Enter` to tick then `Tab` to
+advance; Antigravity gets `Space` to tick then `Enter` to submit. A pending
+Antigravity artifact gets `y`. A fingerprint of agent + question + option
+labels stops the same dialog being answered twice within `--cooldown`.
 
 ## Caveats
 
@@ -90,8 +108,12 @@ stops the same dialog being answered twice within `--cooldown`.
   on panes whose work you are happy to let run unattended.
 - Free-text questions (`Type something`) are never chosen; the agent still
   gets the first real option.
-- Rendering changes in Claude Code or other agents may need the regexes in
-  `herdr_accept_tool.py` updated. Sample screens live in `tests/test_parse.py`.
+- Antigravity in plan mode writes the plan as an artifact and waits for
+  approval through `/artifact`; the tool approves it only while that panel is
+  open. It does not open the panel itself.
+- Rendering changes in Claude Code or Antigravity may need the regexes in
+  `herdr_accept_tool.py` updated. Sample screens live in `tests/test_parse.py`
+  (Claude Code) and `tests/test_antigravity.py` (Antigravity CLI).
 
 ## Tests
 
