@@ -1,0 +1,52 @@
+# herdr-plugin.toml — manifest for herdr-accept-tool.
+#
+# Actions arm or disarm auto-accept on the focused pane by editing a state
+# file and marking the pane label with ⚡. Answering is done by
+# scripts/supervisor.py, which runs outside herdr (launchd) so it survives
+# herdr restarts and reboots. The CLI `herdr-accept-tool <pane-id>` keeps
+# working independently of the plugin.
+
+id = "herdr-accept-tool"
+name = "Herdr Accept Tool"
+version = "0.2.0"
+min_herdr_version = "0.9.0"
+description = "Auto-answer Yes / Recommended prompts of Claude Code and Antigravity CLI in the focused pane."
+platforms = ["macos", "linux"]
+
+[[actions]]
+id = "toggle"
+title = "Auto-accept: toggle on this pane"
+description = "Arm or disarm auto-accept for the focused pane."
+contexts = ["pane"]
+command = ["python3", "scripts/toggle.py", "toggle"]
+
+[[actions]]
+id = "arm"
+title = "Auto-accept: arm this pane"
+contexts = ["pane"]
+command = ["python3", "scripts/toggle.py", "arm"]
+
+[[actions]]
+id = "disarm"
+title = "Auto-accept: disarm this pane"
+contexts = ["pane"]
+command = ["python3", "scripts/toggle.py", "disarm"]
+
+[[actions]]
+id = "disarm-all"
+title = "Auto-accept: disarm every pane"
+contexts = ["global", "pane"]
+command = ["python3", "scripts/toggle.py", "disarm-all"]
+
+[[actions]]
+id = "status"
+title = "Auto-accept: show armed panes"
+contexts = ["global", "pane"]
+command = ["python3", "scripts/toggle.py", "status"]
+
+[[startup]]
+command = ["bash", "scripts/startup.sh"]
+
+[[events]]
+on = "pane.closed"
+command = ["python3", "scripts/toggle.py", "prune"]
