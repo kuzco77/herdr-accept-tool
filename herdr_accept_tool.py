@@ -28,14 +28,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Sequence
 
-HERDR = "herdr"
+HERDR = os.environ.get("HERDR_BIN_PATH") or "herdr"
 PANE_ID_PATTERN = re.compile(r"[A-Za-z0-9]+:[A-Za-z0-9]+")
 CLAUDE_CURSOR = "❯"
 ANTIGRAVITY_CURSOR = ">"
@@ -311,11 +312,60 @@ def log(message: str, quiet: bool = False) -> None:
     sys.stderr.flush()
 
 
+@dataclass
+class Answerer:
+    """Answers prompts on one pane, remembering what it already answered.
+
+    Shared by the single-pane CLI loop and the plugin supervisor, which keeps
+    one Answerer per armed pane.
+    """
+
+    pane_id: str
+    prefer: "re.Pattern[str]"
+    cooldown: float = 10.0
+    dry_run: bool = False
+    quiet: bool = False
+    answered: dict = field(default_factory=dict)
+
+    def answer(self, screen: str) -> bool:
+        """Answer the dialog on ``screen`` if there is one. True when keys were sent."""
+        prompt = parse_prompt(screen)
+        if prompt is None:
+            return False
+        key = prompt.fingerprint()
+        last = self.answered.get(key)
+        if last is not None and time.monotonic() - last < self.cooldown:
+            return False
+        index = choose_option(prompt, self.prefer)
+        keys = keys_for(prompt, index)
+        log(
+            "%s prompt %r -> option %d %r (keys: %s)%s"
+            % (
+                self.pane_id,
+                prompt.question[:80],
+                index + 1,
+                prompt.options[index].label,
+                " ".join(keys),
+                " [dry-run]" if self.dry_run else "",
+            ),
+            self.quiet,
+        )
+        if not self.dry_run:
+            send_keys(self.pane_id, keys)
+        self.answered[key] = time.monotonic()
+        return True
+
+
 def watch(args: argparse.Namespace) -> int:
-    prefer = re.compile(args.prefer)
     pane_id = resolve_pane(args.target)
     log("watching pane %s (target %s)" % (pane_id, args.target), args.quiet)
-    answered: dict[str, float] = {}
+    answerer = Answerer(
+        pane_id=pane_id,
+        prefer=re.compile(args.prefer),
+        cooldown=args.cooldown,
+        dry_run=args.dry_run,
+        quiet=args.quiet,
+    )
     started = time.monotonic()
     while True:
         if args.timeout and time.monotonic() - started > args.timeout:
@@ -326,32 +376,11 @@ def watch(args: argparse.Namespace) -> int:
         except HerdrError as error:
             log("pane gone: %s" % error, args.quiet)
             return 0
-        prompt = parse_prompt(screen)
-        if prompt is not None:
-            key = prompt.fingerprint()
-            last = answered.get(key)
-            if last is None or time.monotonic() - last >= args.cooldown:
-                index = choose_option(prompt, prefer)
-                label = prompt.options[index].label
-                keys = keys_for(prompt, index)
-                log(
-                    "prompt %r -> option %d %r (keys: %s)%s"
-                    % (
-                        prompt.question[:80],
-                        index + 1,
-                        label,
-                        " ".join(keys),
-                        " [dry-run]" if args.dry_run else "",
-                    ),
-                    args.quiet,
-                )
-                if not args.dry_run:
-                    send_keys(pane_id, keys)
-                answered[key] = time.monotonic()
-                if args.once:
-                    return 0
-                time.sleep(args.settle)
-                continue
+        if answerer.answer(screen):
+            if args.once:
+                return 0
+            time.sleep(args.settle)
+            continue
         time.sleep(args.interval)
 
 
