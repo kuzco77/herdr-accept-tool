@@ -10,10 +10,15 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, Iterable, Optional
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from herdr_accept_tool import MODE_ALL, MODE_PERMISSIONS  # noqa: E402
 
 STATE_DIR = Path(
     os.environ.get("HERDR_ACCEPT_STATE_DIR") or "~/.local/state/herdr-accept-tool"
@@ -22,7 +27,10 @@ STATE_FILE = STATE_DIR / "armed.json"
 HEARTBEAT_FILE = STATE_DIR / "supervisor.heartbeat"
 LOG_FILE = STATE_DIR / "supervisor.log"
 DEFAULT_TTL_SECONDS = float(os.environ.get("HERDR_ACCEPT_TTL") or 12 * 3600)
-LABEL_MARKER = "⚡ "
+# Pane label prefix per mode: ⚡ answers everything, 🔐 answers permissions only.
+LABEL_MARKERS = {MODE_ALL: "⚡ ", MODE_PERMISSIONS: "🔐 "}
+LABEL_MARKER = LABEL_MARKERS[MODE_ALL]
+MODE_TITLES = {MODE_ALL: "all", MODE_PERMISSIONS: "permissions only"}
 
 
 @dataclass
@@ -32,6 +40,7 @@ class Armed:
     armed_at: float
     ttl: float
     label_before: Optional[str]
+    mode: str = MODE_ALL  # default so an armed.json written before modes existed still loads
 
     @property
     def expires_at(self) -> float:
@@ -89,12 +98,15 @@ def supervisor_alive(max_age: float = 15.0) -> bool:
         return False
 
 
-def marked_label(label: Optional[str], fallback: str) -> str:
-    base = label or fallback
-    return base if base.startswith(LABEL_MARKER) else LABEL_MARKER + base
+def marked_label(label: Optional[str], fallback: str, mode: str = MODE_ALL) -> str:
+    base = unmarked_label(label) or fallback
+    return LABEL_MARKERS[mode] + base
 
 
 def unmarked_label(label: Optional[str]) -> Optional[str]:
-    if label and label.startswith(LABEL_MARKER):
-        return label[len(LABEL_MARKER):]
+    if not label:
+        return label
+    for marker in LABEL_MARKERS.values():
+        if label.startswith(marker):
+            return label[len(marker):]
     return label

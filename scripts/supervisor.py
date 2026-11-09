@@ -84,14 +84,16 @@ class Supervisor:
         self.idle_reported: Dict[str, str] = {}
         self.backoff = BACKOFF_MIN
 
-    def answerer_for(self, pane_id: str) -> Answerer:
+    def answerer_for(self, pane_id: str, mode: str) -> Answerer:
+        """One Answerer per pane; replaced when the pane is re-armed in another mode."""
         answerer = self.answerers.get(pane_id)
-        if answerer is None:
+        if answerer is None or answerer.mode != mode:
             answerer = Answerer(
                 pane_id=pane_id,
                 prefer=self.prefer,
                 cooldown=self.args.cooldown,
                 dry_run=self.args.dry_run,
+                mode=mode,
             )
             self.answerers[pane_id] = answerer
         return answerer
@@ -137,7 +139,7 @@ class Supervisor:
             except HerdrError as error:
                 log("%s read failed: %s" % (pane_id, error))
                 continue
-            if self.answerer_for(pane_id).answer(screen):
+            if self.answerer_for(pane_id, armed[pane_id].mode).answer(screen):
                 time.sleep(self.args.settle)
         return bool(plan.active)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -16,11 +17,16 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import accept_state as state  # noqa: E402
-from supervisor import plan_cycle  # noqa: E402
+from herdr_accept_tool import MODE_ALL, MODE_PERMISSIONS  # noqa: E402
+from supervisor import Supervisor, build_parser, plan_cycle  # noqa: E402
 
 
-def armed(pane_id: str, armed_at: float = 1000.0, ttl: float = 3600.0) -> state.Armed:
-    return state.Armed(pane_id=pane_id, cwd="/tmp", armed_at=armed_at, ttl=ttl, label_before=None)
+def armed(
+    pane_id: str, armed_at: float = 1000.0, ttl: float = 3600.0, mode: str = MODE_ALL
+) -> state.Armed:
+    return state.Armed(
+        pane_id=pane_id, cwd="/tmp", armed_at=armed_at, ttl=ttl, label_before=None, mode=mode
+    )
 
 
 class StateFileTest(unittest.TestCase):
@@ -60,6 +66,19 @@ class StateFileTest(unittest.TestCase):
         self.assertEqual(state.unmarked_label("⚡ x"), "x")
         self.assertIsNone(state.unmarked_label(None))
 
+    def test_permissions_label_marker(self) -> None:
+        self.assertEqual(state.marked_label("x", "auto", MODE_PERMISSIONS), "🔐 x")
+        self.assertEqual(state.marked_label("⚡ x", "auto", MODE_PERMISSIONS), "🔐 x")
+        self.assertEqual(state.marked_label("🔐 x", "auto", MODE_ALL), "⚡ x")
+        self.assertEqual(state.unmarked_label("🔐 x"), "x")
+
+    def test_mode_roundtrip_and_legacy_default(self) -> None:
+        state.arm_pane(armed("w1:p1", mode=MODE_PERMISSIONS))
+        self.assertEqual(state.load_state()["w1:p1"].mode, MODE_PERMISSIONS)
+        legacy = {"w1:p2": {"pane_id": "w1:p2", "cwd": "/tmp", "armed_at": 1.0, "ttl": 1.0, "label_before": None}}
+        state.STATE_FILE.write_text(json.dumps(legacy))
+        self.assertEqual(state.load_state()["w1:p2"].mode, MODE_ALL)
+
 
 class PlanCycleTest(unittest.TestCase):
     def test_closed_pane_is_dropped(self) -> None:
@@ -91,6 +110,16 @@ class PlanCycleTest(unittest.TestCase):
         )
         self.assertEqual(plan.active, ["w1:p1", "w1:p2"])
         self.assertEqual(plan.idle, {"w1:p3": "no process"})
+
+
+class AnswererModeSwitchTest(unittest.TestCase):
+    def test_answerer_replaced_when_pane_rearmed_in_other_mode(self) -> None:
+        supervisor = Supervisor(build_parser().parse_args([]))
+        first = supervisor.answerer_for("w1:p1", MODE_ALL)
+        self.assertIs(supervisor.answerer_for("w1:p1", MODE_ALL), first)
+        second = supervisor.answerer_for("w1:p1", MODE_PERMISSIONS)
+        self.assertIsNot(second, first)
+        self.assertEqual(second.mode, MODE_PERMISSIONS)
 
 
 if __name__ == "__main__":
