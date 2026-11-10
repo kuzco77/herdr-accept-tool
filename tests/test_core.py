@@ -206,5 +206,75 @@ class HeartbeatTest(unittest.TestCase):
         self.assertEqual(state.HEARTBEAT_FILE.read_text(), "1234")
 
 
+from supervisor import CoreSource, Supervisor, TuiSource, build_parser  # noqa: E402
+
+
+class FakeSource:
+    def __init__(self, name, armed=None, live=None, process=None, screen="", error=None):
+        self.name = name
+        self.backend = RecordingBackend(screen)
+        self.armed = armed or {}
+        self.live = live or {}
+        self.process = process or {}
+        self.error = error
+        self.snapshots = 0
+        self.disarmed = []
+
+    def snapshot(self):
+        self.snapshots += 1
+        if self.error:
+            raise HerdrError(self.error)
+        return self.armed, self.live, self.process.get
+
+    def disarm(self, target, reason, live):
+        self.disarmed.append((target, reason, live))
+
+
+def core_armed(address, armed_at=1e12, mode=MODE_ALL):
+    return state.Armed(pane_id=address, cwd="/tmp", armed_at=armed_at, ttl=3600.0, label_before=None, mode=mode)
+
+
+class SupervisorSourcesTest(unittest.TestCase):
+    def supervisor(self, *sources):
+        return Supervisor(build_parser().parse_args(["--settle", "0"]), sources=list(sources))
+
+    def test_default_sources_are_tui_then_core(self) -> None:
+        supervisor = Supervisor(build_parser().parse_args([]))
+        self.assertEqual([type(s) for s in supervisor.sources], [TuiSource, CoreSource])
+
+    def test_core_prompt_answered_through_core_backend(self) -> None:
+        core = FakeSource("core", {"t17": core_armed("t17")}, {"t17": {}}, {"t17": "claude"}, screen=cc.PERMISSION)
+        self.assertTrue(self.supervisor(core).cycle())
+        self.assertEqual(core.backend.sent, [("t17", ["Enter"])])
+
+    def test_down_source_backs_off_alone(self) -> None:
+        tui = FakeSource("tui", error="socket gone")
+        core = FakeSource("core", {"t17": core_armed("t17")}, {"t17": {}}, {"t17": "claude"}, screen=cc.PERMISSION)
+        supervisor = self.supervisor(tui, core)
+        self.assertTrue(supervisor.cycle())
+        self.assertTrue(supervisor.cycle())
+        self.assertEqual(tui.snapshots, 1)
+        self.assertEqual(core.snapshots, 2)
+
+    def test_expired_core_terminal_is_disarmed(self) -> None:
+        core = FakeSource("core", {"t17": core_armed("t17", armed_at=0.0)}, {"t17": {}}, {"t17": "claude"})
+        self.assertFalse(self.supervisor(core).cycle())
+        self.assertEqual(core.disarmed, [("t17", "ttl expired", True)])
+
+    def test_core_shell_stays_idle(self) -> None:
+        core = FakeSource("core", {"t17": core_armed("t17")}, {"t17": {}}, {"t17": "zsh"}, screen=cc.PERMISSION)
+        self.assertFalse(self.supervisor(core).cycle())
+        self.assertEqual(core.backend.sent, [])
+        self.assertEqual(core.disarmed, [])
+
+    def test_core_source_snapshot_from_labels(self) -> None:
+        with mock.patch("core_api.run_hc", side_effect=fake_hc({"t17": T17})):
+            armed, live, process_of = CoreSource().snapshot()
+        self.assertEqual(list(armed), ["t17"])
+        self.assertEqual(armed["t17"].mode, MODE_ALL)
+        self.assertIn("t17", live)
+        self.assertEqual(process_of("t17"), "claude")
+
+
 if __name__ == "__main__":
     unittest.main()

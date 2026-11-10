@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Long-running supervisor: answers prompts on every armed pane.
+"""Long-running supervisor: answers prompts on every armed pane and terminal.
 
 Runs outside herdr (launchd on macOS, see install-launchd.sh) so it survives
-herdr restarts and reboots. Each cycle it re-reads the armed-pane state file,
-drops panes that closed or whose TTL expired, skips panes whose foreground
-process is not a known agent (a pane restored as a plain shell gets no key
-presses), and answers whatever dialog the remaining panes show.
+herdr restarts and reboots. Two sources are polled each cycle: herdr TUI panes
+armed in armed.json, and herdr-core terminals armed with the `accept` label.
+For each, it drops entries that closed or whose TTL expired, skips targets
+whose foreground process is not a known agent (a pane restored as a plain
+shell gets no key presses), and answers whatever dialog the rest show.
 
-When the herdr socket is down it backs off and retries; state is never
-touched in that case.
+When a source is unreachable it backs off on its own and retries; the other
+source keeps running, and state is never touched for the unreachable one.
 
 usage: supervisor.py [--interval S] [--idle-interval S] [--dry-run] [--once]
 """
@@ -22,18 +23,21 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import accept_state as state  # noqa: E402
+import core_api  # noqa: E402
 import herdr_api as herdr  # noqa: E402
 from herdr_accept_tool import (  # noqa: E402
     DEFAULT_PREFER,
     Answerer,
+    Backend,
+    CoreBackend,
     HerdrError,
+    TuiBackend,
     log,
-    read_screen,
 )
 
 AGENT_PROCESSES = tuple(
@@ -76,16 +80,66 @@ def plan_cycle(
     return plan
 
 
+Snapshot = Tuple[Dict[str, state.Armed], Dict[str, dict], Callable[[str], Optional[str]]]
+
+
+class TuiSource:
+    """herdr TUI panes armed through the plugin actions (armed.json)."""
+
+    name = "tui"
+
+    def __init__(self) -> None:
+        self.backend: Backend = TuiBackend()
+
+    def snapshot(self) -> Snapshot:
+        armed = state.load_state()
+        if not armed:
+            return {}, {}, lambda _pane: None
+        return armed, herdr.list_panes(), herdr.pane_process_name
+
+    def disarm(self, target: str, reason: str, live: bool) -> None:
+        entry = state.remove_panes([target]).get(target)
+        if live and entry is not None:
+            try:
+                herdr.rename_pane(target, state.unmarked_label(entry.label_before))
+            except HerdrError:
+                pass
+            herdr.notify("auto-accept OFF", "pane %s · %s" % (target, reason))
+
+
+class CoreSource:
+    """herdr-core terminals armed with the `accept` label (herdr-app header mod)."""
+
+    name = "core"
+
+    def __init__(self) -> None:
+        self.backend: Backend = CoreBackend()
+
+    def snapshot(self) -> Snapshot:
+        records = core_api.armed_terminals()
+        armed = {address: core_api.armed_entry(address, record) for address, record in records.items()}
+        return armed, records, lambda address: core_api.process_name(records.get(address))
+
+    def disarm(self, target: str, reason: str, live: bool) -> None:
+        if not live:
+            return
+        try:
+            core_api.disarm(target)
+        except HerdrError as error:
+            log("%s disarm failed: %s" % (target, error))
+
+
 class Supervisor:
-    def __init__(self, args: argparse.Namespace) -> None:
+    def __init__(self, args: argparse.Namespace, sources: Optional[list] = None) -> None:
         self.args = args
         self.prefer = re.compile(args.prefer)
         self.answerers: Dict[str, Answerer] = {}
         self.idle_reported: Dict[str, str] = {}
-        self.backoff = BACKOFF_MIN
+        self.sources = sources if sources is not None else [TuiSource(), CoreSource()]
+        self.retry: Dict[str, Tuple[float, float]] = {}
 
-    def answerer_for(self, pane_id: str, mode: str) -> Answerer:
-        """One Answerer per pane; replaced when the pane is re-armed in another mode."""
+    def answerer_for(self, pane_id: str, mode: str, backend: Optional[Backend] = None) -> Answerer:
+        """One Answerer per target; replaced when it is re-armed in another mode."""
         answerer = self.answerers.get(pane_id)
         if answerer is None or answerer.mode != mode:
             answerer = Answerer(
@@ -94,57 +148,64 @@ class Supervisor:
                 cooldown=self.args.cooldown,
                 dry_run=self.args.dry_run,
                 mode=mode,
+                backend=backend or TuiBackend(),
             )
             self.answerers[pane_id] = answerer
         return answerer
 
-    def drop(self, pane_id: str, reason: str, live: bool) -> None:
-        removed = state.remove_panes([pane_id])
+    def drop(self, source, pane_id: str, reason: str, live: bool) -> None:
+        source.disarm(pane_id, reason, live)
         self.answerers.pop(pane_id, None)
         self.idle_reported.pop(pane_id, None)
         log("%s disarmed: %s" % (pane_id, reason))
-        entry = removed.get(pane_id)
-        if live and entry is not None:
-            try:
-                herdr.rename_pane(pane_id, state.unmarked_label(entry.label_before))
-            except HerdrError:
-                pass
-            herdr.notify("auto-accept OFF", "pane %s · %s" % (pane_id, reason))
+
+    def snapshot(self, source, now: float) -> Optional[Snapshot]:
+        """The source's armed targets, or None while it is backing off."""
+        retry_at, backoff = self.retry.get(source.name, (0.0, BACKOFF_MIN))
+        if now < retry_at:
+            return None
+        try:
+            snap = source.snapshot()
+        except HerdrError as error:
+            log("%s unavailable (%s), retry in %.0fs" % (source.name, error, backoff))
+            self.retry[source.name] = (now + backoff, min(backoff * 2, BACKOFF_MAX))
+            return None
+        self.retry.pop(source.name, None)
+        return snap
 
     def cycle(self) -> bool:
-        """One pass over the armed panes. Returns True when any pane is active."""
+        """One pass over every source. Returns True when any target is active."""
         state.touch_heartbeat()
-        armed = state.load_state()
-        if not armed:
-            return False
-        try:
-            live = herdr.list_panes()
-        except HerdrError as error:
-            log("herdr unavailable (%s), retry in %.0fs" % (error, self.backoff))
-            time.sleep(self.backoff)
-            self.backoff = min(self.backoff * 2, BACKOFF_MAX)
-            return False
-        self.backoff = BACKOFF_MIN
-        plan = plan_cycle(armed, live, time.time(), herdr.pane_process_name)
-        for pane_id, reason in plan.dropped.items():
-            self.drop(pane_id, reason, live=pane_id in live)
-        for pane_id, process in plan.idle.items():
-            if self.idle_reported.get(pane_id) != process:
-                log("%s idle: foreground is %s, waiting for an agent" % (pane_id, process))
-                self.idle_reported[pane_id] = process
-        for pane_id in plan.active:
-            self.idle_reported.pop(pane_id, None)
-            try:
-                screen = read_screen(pane_id, SCREEN_LINES)
-            except HerdrError as error:
-                log("%s read failed: %s" % (pane_id, error))
+        now = time.time()
+        any_active = False
+        for source in self.sources:
+            snap = self.snapshot(source, now)
+            if not snap or not snap[0]:
                 continue
-            if self.answerer_for(pane_id, armed[pane_id].mode).answer(screen):
-                time.sleep(self.args.settle)
-        return bool(plan.active)
+            armed, live, process_of = snap
+            plan = plan_cycle(armed, live, now, process_of)
+            for pane_id, reason in plan.dropped.items():
+                self.drop(source, pane_id, reason, live=pane_id in live)
+            for pane_id, process in plan.idle.items():
+                if self.idle_reported.get(pane_id) != process:
+                    log("%s idle: foreground is %s, waiting for an agent" % (pane_id, process))
+                    self.idle_reported[pane_id] = process
+            for pane_id in plan.active:
+                any_active = True
+                self.idle_reported.pop(pane_id, None)
+                try:
+                    screen = source.backend.read_screen(pane_id, SCREEN_LINES)
+                except HerdrError as error:
+                    log("%s read failed: %s" % (pane_id, error))
+                    continue
+                answerer = self.answerer_for(pane_id, armed[pane_id].mode, source.backend)
+                if answerer.answer(screen):
+                    time.sleep(self.args.settle)
+        return any_active
 
     def run(self) -> int:
-        log("supervisor started, state %s" % state.STATE_FILE)
+        log("supervisor started, sources %s, state %s" % (
+            ", ".join(source.name for source in self.sources), state.STATE_FILE))
         while True:
             active = self.cycle()
             if self.args.once:
@@ -153,7 +214,7 @@ class Supervisor:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Answer prompts on every armed herdr pane.")
+    parser = argparse.ArgumentParser(description="Answer prompts on every armed herdr pane and herdr-core terminal.")
     parser.add_argument("--interval", type=float, default=1.0, help="poll seconds while a pane is active (1.0)")
     parser.add_argument("--idle-interval", type=float, default=3.0, help="poll seconds while nothing is armed (3.0)")
     parser.add_argument("--settle", type=float, default=1.5, help="pause after answering (1.5)")
