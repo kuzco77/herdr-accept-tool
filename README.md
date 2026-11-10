@@ -10,7 +10,22 @@ and Antigravity CLI (`agy`). Two ways to use it:
   survives herdr restarts and reboots. See [Plugin](#plugin).
 
 Whenever a watched pane shows a choice dialog the tool picks an option and
-confirms it.
+confirms it. Two modes decide which dialogs it touches:
+
+| mode | CLI | plugin action | label | answers |
+|---|---|---|---|---|
+| all (default) | `--mode all` | `toggle`, `arm` | `⚡` | every dialog |
+| permissions only | `--mode permissions` | `toggle-permissions`, `arm-permissions` | `🔐` | permission and approval prompts; questions the agent asks you stay on screen |
+
+A dialog counts as a *question* when it carries a marker only
+`AskUserQuestion` / `ask_question` render: a `Type something`, `Chat about
+this`, `Submit answers` or `Write-in...` option, checkboxes, or a
+`Question n/m:` heading. A dialog counts as a *permission* when it is the
+Antigravity artifact panel or has a Yes-style option and none of those
+markers (tool permissions, folder trust, plan approval). Anything else is
+treated as a question, so permissions mode never answers a dialog it cannot
+classify. In permissions mode a skipped question is logged once per
+`--cooldown`.
 
 Choice order per dialog:
 
@@ -74,6 +89,9 @@ from any directory.
 # by agent name (set with: herdr agent rename <pane> my-agent)
 ./herdr_accept_tool.py my-agent
 
+# answer permission prompts only, leave the agent's questions for me
+./herdr_accept_tool.py my-agent --mode permissions
+
 # answer one prompt and exit
 ./herdr_accept_tool.py my-agent --once
 
@@ -96,6 +114,7 @@ Options:
 | `--cooldown` | 10 | seconds before re-answering an identical dialog |
 | `--lines` | 80 | screen lines read per poll |
 | `--prefer` | `Recommended\|Khuyến nghị` | regex for the preferred option |
+| `--mode` | `all` | `all` answers every dialog, `permissions` answers permission prompts only |
 | `--once` | off | exit after the first answer |
 | `--dry-run` | off | detect and log only |
 | `-q` | off | silence the log |
@@ -107,7 +126,7 @@ parts:
 
 | part | runs where | job |
 |---|---|---|
-| actions (`toggle`, `arm`, `disarm`, `disarm-all`, `status`) | herdr, on keypress | edit `~/.local/state/herdr-accept-tool/armed.json`, prefix the pane label with `⚡`, show a toast |
+| actions (`toggle`, `toggle-permissions`, `arm`, `arm-permissions`, `disarm`, `disarm-all`, `status`) | herdr, on keypress | edit `~/.local/state/herdr-accept-tool/armed.json`, prefix the pane label with `⚡` (all) or `🔐` (permissions only), show a toast |
 | `scripts/supervisor.py` | launchd user agent (macOS) | poll every armed pane, answer prompts, drop panes that closed or expired |
 | startup hook + `pane.closed` event | herdr | prune stale panes, kick the supervisor after a herdr restart |
 
@@ -135,7 +154,13 @@ Bind the actions in `~/.config/herdr/config.toml`, then `herdr server reload-con
 key = "prefix+y"
 type = "plugin_action"
 command = "herdr-accept-tool.toggle"
-description = "auto-accept: toggle this pane"
+description = "auto-accept: toggle this pane (all dialogs)"
+
+[[keys.command]]
+key = "prefix+u"
+type = "plugin_action"
+command = "herdr-accept-tool.toggle-permissions"
+description = "auto-accept: toggle this pane (permissions only)"
 
 [[keys.command]]
 key = "prefix+shift+y"
@@ -144,7 +169,11 @@ command = "herdr-accept-tool.disarm-all"
 description = "auto-accept: off everywhere"
 ```
 
-The `⚡` marker lives on the pane border label. With herdr's default
+A toggle on a pane armed in the *other* mode switches mode instead of
+disarming, so `prefix+y` then `prefix+u` leaves the pane in permissions-only
+mode; press `prefix+u` again to disarm. Switching resets the TTL.
+
+The `⚡` / `🔐` marker lives on the pane border label. With herdr's default
 `ui.pane_borders = "auto"` a tab with a single pane draws no border, so the
 marker is invisible there. Show borders always to see it on every pane:
 
@@ -181,8 +210,14 @@ labels stops the same dialog being answered twice within `--cooldown`.
 
 ## Caveats
 
-- This approves whatever the agent asks, including shell commands. Use it only
-  on panes whose work you are happy to let run unattended.
+- Both modes approve whatever permission the agent asks for, including shell
+  commands. Use it only on panes whose work you are happy to let run
+  unattended. Permissions mode only keeps the agent's *questions* for you.
+- Question detection relies on the extra options Claude Code and Antigravity
+  render in their question tools. A question rendered without any of them
+  (no `Type something` / `Chat about this` / `Write-in...` option) is still
+  left alone unless it offers a Yes-style option, in which case it is
+  answered as a permission.
 - Free-text questions (`Type something`) are never chosen; the agent still
   gets the first real option.
 - Antigravity in plan mode writes the plan as an artifact and waits for
@@ -199,5 +234,8 @@ python3 -m unittest discover -s tests -v
 ```
 
 `test_parse.py` and `test_antigravity.py` hold captured screens;
-`test_supervisor.py` covers the state file and the supervisor's per-cycle
-decisions (drop closed / expired panes, idle on plain shells).
+`test_modes.py` classifies every captured screen as permission or question
+and checks permissions mode sends nothing for questions;
+`test_supervisor.py` covers the state file, per-mode labels and the
+supervisor's per-cycle decisions (drop closed / expired panes, idle on plain
+shells, re-arm in another mode).

@@ -15,6 +15,13 @@ artifact approval), it picks one option and confirms it:
        Tiếp tục / Chấp nhận / OK
     3. otherwise option 1
 
+Two modes (--mode):
+
+    all          answer every dialog (default)
+    permissions  answer only permission / approval dialogs; questions the
+                 agent asks the user (AskUserQuestion, ask_question) stay on
+                 screen for a human, see prompt_kind()
+
 The agent flavour is read from the cursor glyph: Claude Code draws ❯,
 Antigravity CLI draws > (and › in its artifact review panel). Multi-select
 keys differ between the two, see keys_for().
@@ -57,6 +64,18 @@ CURSOR_ONLY_PATTERN = re.compile(r"^\s*[❯>]\s*$")
 RULE_CHARS = set("─╌━═-")
 DEFAULT_PREFER = r"(?i)recommended|khuyến nghị|đề xuất|nên (chọn|dùng)"
 YES_PATTERN = re.compile(r"(?i)^(yes|có|đồng ý|tiếp tục|chấp nhận|ok)\b")
+# Options only a user-facing question renders: Claude Code AskUserQuestion
+# ("Type something", "Chat about this", its "Submit answers" screen) and
+# Antigravity ask_question ("Write-in...").
+QUESTION_OPTION_PATTERN = re.compile(r"(?i)^(type something|chat about this|submit answers|write-in)")
+# Question text that only those tools print: Antigravity "Question 1/2: …",
+# Claude Code's multi-question review screen.
+QUESTION_TEXT_PATTERN = re.compile(r"^Question \d+/\d+:|Ready to submit your answers\?")
+MODE_ALL = "all"
+MODE_PERMISSIONS = "permissions"
+MODES = (MODE_ALL, MODE_PERMISSIONS)
+KIND_PERMISSION = "permission"
+KIND_QUESTION = "question"
 
 
 @dataclass(frozen=True)
@@ -270,6 +289,29 @@ def parse_plain_prompt(lines: Sequence[str]) -> Optional[Prompt]:
     )
 
 
+def prompt_kind(prompt: Prompt) -> str:
+    """KIND_PERMISSION for approval dialogs, KIND_QUESTION for anything the
+    agent asks the user to decide.
+
+    Permission: the Antigravity artifact panel, or a dialog with a Yes-style
+    option and none of the markers AskUserQuestion / ask_question always
+    render (free-text, chat, submit options, checkboxes, "Question n/m").
+    Plan approval ("Yes, and auto-accept edits") counts as permission.
+    Anything unrecognised is a question, so permissions mode never answers a
+    dialog it cannot classify.
+    """
+    if prompt.cursor == ARTIFACT_CURSOR:
+        return KIND_PERMISSION
+    if QUESTION_TEXT_PATTERN.search(prompt.question):
+        return KIND_QUESTION
+    for option in prompt.options:
+        if option.checkbox is not None or QUESTION_OPTION_PATTERN.match(option.text):
+            return KIND_QUESTION
+    if any(YES_PATTERN.match(option.text) for option in prompt.options):
+        return KIND_PERMISSION
+    return KIND_QUESTION
+
+
 def choose_option(prompt: Prompt, prefer: re.Pattern[str]) -> int:
     for index, option in enumerate(prompt.options):
         if prefer.search(option.text):
@@ -325,16 +367,28 @@ class Answerer:
     cooldown: float = 10.0
     dry_run: bool = False
     quiet: bool = False
+    mode: str = MODE_ALL
     answered: dict = field(default_factory=dict)
 
     def answer(self, screen: str) -> bool:
-        """Answer the dialog on ``screen`` if there is one. True when keys were sent."""
+        """Answer the dialog on ``screen`` if there is one. True when keys were sent.
+
+        In permissions mode a question is left on screen and logged once per
+        cooldown, so the human can answer it.
+        """
         prompt = parse_prompt(screen)
         if prompt is None:
             return False
         key = prompt.fingerprint()
         last = self.answered.get(key)
         if last is not None and time.monotonic() - last < self.cooldown:
+            return False
+        if self.mode == MODE_PERMISSIONS and prompt_kind(prompt) == KIND_QUESTION:
+            log(
+                "%s question %r left for you (permissions mode)" % (self.pane_id, prompt.question[:80]),
+                self.quiet,
+            )
+            self.answered[key] = time.monotonic()
             return False
         index = choose_option(prompt, self.prefer)
         keys = keys_for(prompt, index)
@@ -358,13 +412,14 @@ class Answerer:
 
 def watch(args: argparse.Namespace) -> int:
     pane_id = resolve_pane(args.target)
-    log("watching pane %s (target %s)" % (pane_id, args.target), args.quiet)
+    log("watching pane %s (target %s, mode %s)" % (pane_id, args.target, args.mode), args.quiet)
     answerer = Answerer(
         pane_id=pane_id,
         prefer=re.compile(args.prefer),
         cooldown=args.cooldown,
         dry_run=args.dry_run,
         quiet=args.quiet,
+        mode=args.mode,
     )
     started = time.monotonic()
     while True:
@@ -396,6 +451,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lines", type=int, default=80, help="screen lines to read (80)")
     parser.add_argument("--timeout", type=float, default=0, help="stop after N seconds, 0 = run until pane closes")
     parser.add_argument("--prefer", default=DEFAULT_PREFER, help="regex for preferred option label")
+    parser.add_argument(
+        "--mode",
+        choices=MODES,
+        default=MODE_ALL,
+        help="all: answer every dialog (default); permissions: answer permission prompts only, leave questions",
+    )
     parser.add_argument("--once", action="store_true", help="answer one prompt then exit")
     parser.add_argument("--dry-run", action="store_true", help="detect and log, send nothing")
     parser.add_argument("-q", "--quiet", action="store_true", help="no log output")

@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Plugin action entrypoint: arm or disarm auto-accept on the focused pane.
 
-usage: toggle.py [toggle|arm|disarm|disarm-all|status|prune]
+usage: toggle.py [toggle|toggle-permissions|arm|arm-permissions|disarm|disarm-all|status|prune]
+
+Two modes: `toggle` / `arm` answer every dialog (⚡), `toggle-permissions` /
+`arm-permissions` answer permission prompts only and leave the agent's
+questions on screen (🔐). A toggle on a pane armed in the other mode switches
+mode instead of disarming.
 
 The action only edits the armed-pane state file and the pane label. Answering
 is done by scripts/supervisor.py, which is reported in the toast when it is
@@ -18,28 +23,38 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import accept_state as state  # noqa: E402
 import herdr_api as herdr  # noqa: E402
-from herdr_accept_tool import HerdrError  # noqa: E402
+from herdr_accept_tool import MODE_ALL, MODE_PERMISSIONS, HerdrError  # noqa: E402
 
 SUPERVISOR_HINT = "supervisor not running: run scripts/install-launchd.sh"
+ACTION_MODES = {
+    "toggle": MODE_ALL,
+    "arm": MODE_ALL,
+    "toggle-permissions": MODE_PERMISSIONS,
+    "arm-permissions": MODE_PERMISSIONS,
+}
 
 
-def arm(pane_id: str) -> None:
+def arm(pane_id: str, mode: str) -> None:
     pane = herdr.get_pane(pane_id)
-    label_before = pane.get("label")
+    # Re-arming (mode switch) must keep the label from before the first arm,
+    # not the currently marked one.
+    previous = state.load_state().get(pane_id)
+    label_before = previous.label_before if previous else pane.get("label")
     entry = state.Armed(
         pane_id=pane_id,
         cwd=pane.get("cwd") or "",
         armed_at=time.time(),
         ttl=state.DEFAULT_TTL_SECONDS,
         label_before=label_before,
+        mode=mode,
     )
     state.arm_pane(entry)
-    herdr.rename_pane(pane_id, state.marked_label(label_before, pane.get("agent") or "auto"))
+    herdr.rename_pane(pane_id, state.marked_label(label_before, pane.get("agent") or "auto", mode))
     until = time.strftime("%H:%M", time.localtime(entry.expires_at))
     body = "pane %s · until %s" % (pane_id, until)
     if not state.supervisor_alive():
         body += "\n" + SUPERVISOR_HINT
-    herdr.notify("auto-accept ON", body)
+    herdr.notify("auto-accept ON (%s)" % state.MODE_TITLES[mode], body)
 
 
 def disarm(pane_id: str, reason: str = "") -> None:
@@ -68,7 +83,12 @@ def status() -> None:
         herdr.notify("auto-accept", "no armed panes")
         return
     lines = [
-        "%s until %s" % (pane_id, time.strftime("%H:%M", time.localtime(entry.expires_at)))
+        "%s %s until %s"
+        % (
+            pane_id,
+            state.MODE_TITLES.get(entry.mode, entry.mode),
+            time.strftime("%H:%M", time.localtime(entry.expires_at)),
+        )
         for pane_id, entry in sorted(armed.items())
     ]
     if not state.supervisor_alive():
@@ -97,14 +117,17 @@ def main(argv: list) -> int:
         prune()
         return 0
     pane_id = herdr.current_pane_id()
-    armed = pane_id in state.load_state()
-    if action == "arm" or (action == "toggle" and not armed):
-        arm(pane_id)
-    elif action == "disarm" or (action == "toggle" and armed):
+    current = state.load_state().get(pane_id)
+    mode = ACTION_MODES.get(action)
+    if action == "disarm":
         disarm(pane_id)
-    else:
+    elif mode is None:
         sys.stderr.write("unknown action %r\n" % action)
         return 2
+    elif action.startswith("toggle") and current is not None and current.mode == mode:
+        disarm(pane_id)
+    else:
+        arm(pane_id, mode)
     return 0
 
 

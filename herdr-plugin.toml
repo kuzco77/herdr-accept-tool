@@ -1,30 +1,44 @@
 # herdr-plugin.toml — manifest for herdr-accept-tool.
 #
 # Actions arm or disarm auto-accept on the focused pane by editing a state
-# file and marking the pane label with ⚡. Answering is done by
+# file and marking the pane label with ⚡ (answer everything) or 🔐 (answer
+# permission prompts only, leave questions). Answering is done by
 # scripts/supervisor.py, which runs outside herdr (launchd) so it survives
 # herdr restarts and reboots. The CLI `herdr-accept-tool <pane-id>` keeps
 # working independently of the plugin.
 
 id = "herdr-accept-tool"
 name = "Herdr Accept Tool"
-version = "0.2.0"
+version = "0.3.0"
 min_herdr_version = "0.9.0"
-description = "Auto-answer Yes / Recommended prompts of Claude Code and Antigravity CLI in the focused pane."
+description = "Auto-answer Yes / Recommended prompts of Claude Code and Antigravity CLI in the focused pane, all dialogs or permissions only."
 platforms = ["macos", "linux"]
 
 [[actions]]
 id = "toggle"
-title = "Auto-accept: toggle on this pane"
-description = "Arm or disarm auto-accept for the focused pane."
+title = "Auto-accept: toggle on this pane (all dialogs)"
+description = "Arm or disarm auto-accept for every dialog on the focused pane. On a permissions-only pane this switches to all."
 contexts = ["pane"]
 command = ["python3", "scripts/toggle.py", "toggle"]
 
 [[actions]]
+id = "toggle-permissions"
+title = "Auto-accept: toggle on this pane (permissions only)"
+description = "Arm or disarm permission-only auto-accept; the agent's questions stay on screen for you. On an all-dialogs pane this switches to permissions only."
+contexts = ["pane"]
+command = ["python3", "scripts/toggle.py", "toggle-permissions"]
+
+[[actions]]
 id = "arm"
-title = "Auto-accept: arm this pane"
+title = "Auto-accept: arm this pane (all dialogs)"
 contexts = ["pane"]
 command = ["python3", "scripts/toggle.py", "arm"]
+
+[[actions]]
+id = "arm-permissions"
+title = "Auto-accept: arm this pane (permissions only)"
+contexts = ["pane"]
+command = ["python3", "scripts/toggle.py", "arm-permissions"]
 
 [[actions]]
 id = "disarm"
