@@ -39,6 +39,24 @@ export function heartbeatStale(text, nowSeconds, maxAge = 15) {
   return !Number.isFinite(beat) || nowSeconds - beat > maxAge;
 }
 
+const CORE_OK_MAX_AGE = 90;
+
+/**
+ * Why answering may not work, or null. `heartbeat` and `coreOk` are the texts of the two state
+ * files (epoch seconds). core.ok is older than the supervisor's longest backoff (60 s) plus a margin
+ * when the supervisor cannot reach herdr-core.
+ */
+export function supervisorWarning(heartbeat, coreOk, nowSeconds) {
+  if (heartbeatStale(heartbeat, nowSeconds)) return "supervisor not running";
+  if (heartbeatStale(coreOk, nowSeconds, CORE_OK_MAX_AGE)) return "supervisor cannot reach herdr-core";
+  return null;
+}
+
+/** Remote herdr-core terminals are addressed `machine/tN`; the supervisor does not serve them. */
+export function isRemote(address) {
+  return typeof address === "string" && address.includes("/");
+}
+
 const MESSAGE_CAP = 200;
 
 /** A short, user-facing reason for a failed `hc` call: the JSON error message, else the raw output. */

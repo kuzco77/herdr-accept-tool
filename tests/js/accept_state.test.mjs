@@ -6,9 +6,11 @@ import {
   hcErrorMessage,
   heartbeatStale,
   isDisarmAllActor,
+  isRemote,
   labelArgs,
   modeOf,
   nextMode,
+  supervisorWarning,
 } from "../../herdr-app/accept-header/state.js";
 
 test("toggle arms all, disarms all, switches permissions to all", () => {
@@ -151,4 +153,33 @@ test("currentMode returns to the labels once they match or the assumption is old
   assert.equal(currentMode("all", { mode: "all", at: 100 }, 101), "all");
   assert.equal(currentMode(null, { mode: "all", at: 100 }, 106), null);
   assert.equal(currentMode(null, { mode: "all", at: 100 }, 105), "all");
+});
+
+test("a herdr-core address with a slash is a remote terminal", () => {
+  assert.equal(isRemote("mac-mini-tvf/t1"), true);
+  assert.equal(isRemote("t17"), false);
+  assert.equal(isRemote(undefined), false);
+  assert.equal(isRemote(""), false);
+});
+
+test("no warning while the heartbeat and core.ok are fresh", () => {
+  assert.equal(supervisorWarning("1000", "1000", 1010), null);
+  assert.equal(supervisorWarning("1000", "950", 1010), null);
+});
+
+test("a stale or missing heartbeat means the supervisor is not running", () => {
+  assert.equal(supervisorWarning("900", "1000", 1010), "supervisor not running");
+  assert.equal(supervisorWarning(null, "1000", 1010), "supervisor not running");
+  assert.equal(supervisorWarning("", "1000", 1010), "supervisor not running");
+});
+
+test("a fresh heartbeat with core.ok missing or older than 90 s means herdr-core is unreachable", () => {
+  assert.equal(supervisorWarning("1000", null, 1010), "supervisor cannot reach herdr-core");
+  assert.equal(supervisorWarning("1000", "garbage", 1010), "supervisor cannot reach herdr-core");
+  assert.equal(supervisorWarning("1000", "900", 1000), "supervisor cannot reach herdr-core");
+  assert.equal(supervisorWarning("1000", "910", 1000), null);
+});
+
+test("a dead supervisor is reported before an unreachable core", () => {
+  assert.equal(supervisorWarning("100", null, 1000), "supervisor not running");
 });

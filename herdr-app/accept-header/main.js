@@ -14,14 +14,17 @@ import {
   MODE_ALL,
   currentMode,
   hcErrorMessage,
-  heartbeatStale,
   isDisarmAllActor,
+  isRemote,
   labelArgs,
   modeOf,
   nextMode,
+  supervisorWarning,
 } from "./state.js";
 
-const HEARTBEAT = "/.local/state/herdr-accept-tool/supervisor.heartbeat";
+const STATE = "/.local/state/herdr-accept-tool/";
+const HEARTBEAT = STATE + "supervisor.heartbeat";
+const CORE_OK = STATE + "core.ok";
 
 function icon(p, size, color) {
   if (!p?.icon) return null;
@@ -90,6 +93,10 @@ export default class AcceptHeader extends View {
     const current = currentMode(modeOf(this.terminal()), assumed, nowSeconds());
     const mode = nextMode(current, command);
     if (mode === current) return;
+    if (mode && isRemote(address)) {
+      notify({ title: "auto-accept failed", body: `${address} · remote terminals are not supported`, level: "error" });
+      return;
+    }
     const result = await hc(labelArgs(address, mode, nowSeconds()));
     if (result?.code !== 0) {
       notify({ title: "auto-accept failed", body: hcErrorMessage(result), level: "error" });
@@ -100,13 +107,15 @@ export default class AcceptHeader extends View {
       notify({ title: "auto-accept OFF", body: address, level: "info" });
       return;
     }
-    const beat = await readTextFile(home() + HEARTBEAT).catch(() => null);
-    const stale = heartbeatStale(beat, nowSeconds());
+    const [beat, coreOk] = await Promise.all(
+      [HEARTBEAT, CORE_OK].map((file) => readTextFile(home() + file).catch(() => null)),
+    );
+    const warning = supervisorWarning(beat, coreOk, nowSeconds());
     const what = mode === MODE_ALL ? "all dialogs" : "permissions only";
     notify({
       title: `auto-accept ${MARKERS[mode]} ON`,
-      body: stale ? `${address} · ${what} · supervisor not running` : `${address} · ${what}`,
-      level: stale ? "warning" : "success",
+      body: warning ? `${address} · ${what} · ${warning}` : `${address} · ${what}`,
+      level: warning ? "warning" : "success",
     });
   }
 
