@@ -38,3 +38,36 @@ export function heartbeatStale(text, nowSeconds, maxAge = 15) {
   const beat = Number.parseFloat(text ?? "");
   return !Number.isFinite(beat) || nowSeconds - beat > maxAge;
 }
+
+const MESSAGE_CAP = 200;
+
+/** A short, user-facing reason for a failed `hc` call: the JSON error message, else the raw output. */
+export function hcErrorMessage(result) {
+  if (!result) return "hc gave no result";
+  const stdout = (result.stdout ?? "").trim();
+  const stderr = (result.stderr ?? "").trim();
+  let message = "";
+  try {
+    const parsed = JSON.parse(stdout)?.error?.message;
+    if (typeof parsed === "string") message = parsed.trim();
+  } catch {
+    // stdout is not JSON: use the raw text below.
+  }
+  return (message || stderr || stdout || `hc exited with code ${result.code}`).slice(0, MESSAGE_CAP);
+}
+
+/** True for the one copy that handles disarm-all: the first pane of the current tab, in `panes` order. */
+export function isDisarmAllActor(myPane, panes, currentTab) {
+  if (!myPane || !currentTab) return false;
+  const first = panes.find((p) => p.tab === currentTab);
+  return first?.pane === myPane;
+}
+
+/**
+ * The mode to switch from. `assumed` is {mode, at} from this copy's last write: it wins
+ * while the labels still disagree and it is at most `maxAge` seconds old.
+ */
+export function currentMode(labelMode, assumed, nowSeconds, maxAge = 5) {
+  if (assumed && assumed.mode !== labelMode && nowSeconds - assumed.at <= maxAge) return assumed.mode;
+  return labelMode;
+}

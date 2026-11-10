@@ -2,12 +2,24 @@
 // herdr-core terminal address and ⚡ (answer every dialog) or 🔐 (permissions
 // only). Clicking the marker cycles off → ⚡ → 🔐 → off. Key commands from
 // keys.json (accept-header.toggle, .toggle-permissions, .disarm-all) reach every
-// copy; only the copy of the focused pane acts. Props: { pane, terminal }.
+// copy. toggle and toggle-permissions act in the copy of the focused pane only;
+// disarm-all acts in the copy of the first pane of the current tab, so it works
+// without a focused pane. Props: { pane, terminal }.
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { focused, hc, home, nextCommand, notify, panes, props, readTextFile, run, terminals, theme } from "herdr";
-import { MARKERS, MODE_ALL, heartbeatStale, labelArgs, modeOf, nextMode } from "./state.js";
+import {
+  MARKERS,
+  MODE_ALL,
+  currentMode,
+  hcErrorMessage,
+  heartbeatStale,
+  isDisarmAllActor,
+  labelArgs,
+  modeOf,
+  nextMode,
+} from "./state.js";
 
 const HEARTBEAT = "/.local/state/herdr-accept-tool/supervisor.heartbeat";
 
@@ -29,15 +41,37 @@ function nowSeconds() {
 export default class AcceptHeader extends View {
   init(_props, cx) {
     this.hovered = false;
+    this.assumed = null;
+    this.queue = Promise.resolve();
     cx.spawn(async (cx) => {
       for (;;) {
         const command = await nextCommand();
-        if (focused()?.pane !== props()?.pane) continue;
-        if (command === "disarm-all") await this.disarmAll();
-        else await this.apply(command);
+        if (this.handles(command)) {
+          await this.enqueue(() => (command === "disarm-all" ? this.disarmAll() : this.apply(command)));
+        }
         cx.notify();
       }
     });
+  }
+
+  handles(command) {
+    const mine = props()?.pane;
+    if (!mine) return false;
+    if (command === "disarm-all") return isDisarmAllActor(mine, panes(), focused()?.tab);
+    return focused()?.pane === mine;
+  }
+
+  /** Runs `task` after the earlier ones of this copy. Never rejects: a failure becomes a toast. */
+  enqueue(task) {
+    const run = this.queue.then(async () => {
+      try {
+        await task();
+      } catch (e) {
+        notify({ title: "auto-accept failed", body: String(e?.message ?? e).slice(0, 200), level: "error" });
+      }
+    });
+    this.queue = run.catch(() => {});
+    return this.queue;
   }
 
   me() {
@@ -52,19 +86,22 @@ export default class AcceptHeader extends View {
   async apply(command) {
     const address = props()?.terminal;
     if (!address) return;
-    const current = modeOf(this.terminal());
+    const assumed = this.assumed?.address === address ? this.assumed : null;
+    const current = currentMode(modeOf(this.terminal()), assumed, nowSeconds());
     const mode = nextMode(current, command);
     if (mode === current) return;
     const result = await hc(labelArgs(address, mode, nowSeconds()));
-    if (result.code !== 0) {
-      notify({ title: "auto-accept failed", body: (result.stdout || result.stderr).trim().slice(0, 200), level: "error" });
+    if (result?.code !== 0) {
+      notify({ title: "auto-accept failed", body: hcErrorMessage(result), level: "error" });
       return;
     }
+    this.assumed = { mode, at: nowSeconds(), address };
     if (!mode) {
       notify({ title: "auto-accept OFF", body: address, level: "info" });
       return;
     }
-    const stale = heartbeatStale(await readTextFile(home() + HEARTBEAT), nowSeconds());
+    const beat = await readTextFile(home() + HEARTBEAT).catch(() => null);
+    const stale = heartbeatStale(beat, nowSeconds());
     const what = mode === MODE_ALL ? "all dialogs" : "permissions only";
     notify({
       title: `auto-accept ${MARKERS[mode]} ON`,
@@ -75,7 +112,25 @@ export default class AcceptHeader extends View {
 
   async disarmAll() {
     const armed = terminals().filter((t) => modeOf(t));
-    for (const t of armed) await hc(labelArgs(t.address, null, 0));
+    const failed = [];
+    await Promise.all(
+      armed.map(async (t) => {
+        try {
+          const result = await hc(labelArgs(t.address, null, 0));
+          if (result?.code !== 0) failed.push(t.address);
+        } catch {
+          failed.push(t.address);
+        }
+      }),
+    );
+    if (failed.length > 0) {
+      notify({
+        title: "auto-accept still ON",
+        body: `could not disarm ${failed.length} of ${armed.length}: ${failed.join(", ")}`,
+        level: "error",
+      });
+      return;
+    }
     notify({ title: "auto-accept OFF everywhere", body: `${armed.length} terminal(s)`, level: "info" });
   }
 
@@ -104,7 +159,7 @@ export default class AcceptHeader extends View {
       .on_click((_e, cx) => {
         cx.stop_propagation();
         cx.spawn(async (cx) => {
-          await this.apply("cycle");
+          await this.enqueue(() => this.apply("cycle"));
           cx.notify();
         });
       })
