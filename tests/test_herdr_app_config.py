@@ -216,5 +216,22 @@ class StatusTest(unittest.TestCase):
         self.assertEqual(run_cli("status-errors", stdin="nope")[0], 1)
 
 
+class TerminalAddressesTest(unittest.TestCase):
+    def test_prints_one_address_per_line_including_remote(self) -> None:
+        stdin = '{"terminals": [{"address": "t17", "agent": null}, {"address": "mac-mini-tvf/t1"}], "machines": []}'
+        self.assertEqual(run_cli("terminal-addresses", stdin=stdin), (0, "t17\nmac-mini-tvf/t1\n", ""))
+
+    def test_empty_listing_prints_nothing(self) -> None:
+        self.assertEqual(run_cli("terminal-addresses", stdin='{"terminals": []}'), (0, "", ""))
+        self.assertEqual(run_cli("terminal-addresses", stdin="{}"), (0, "", ""))
+
+    def test_rejects_bad_input(self) -> None:
+        for stdin in ("", "nope", "[]", '{"terminals": "t17"}', '{"terminals": [{"address": 3}]}', '{"terminals": ["t17"]}'):
+            code, out, err = run_cli("terminal-addresses", stdin=stdin)
+            self.assertEqual(code, 1, stdin)
+            self.assertEqual(out, "", stdin)
+            self.assertTrue(err, stdin)
+
+
 if __name__ == "__main__":
     unittest.main()

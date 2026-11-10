@@ -12,6 +12,10 @@
 # Install records the layout shown before switching in
 # $state_dir/herdr-app-prev-layout; uninstall switches back to it (else main).
 # keys.json is copied once to keys.json.accept-backup before the first edit.
+#
+# --uninstall first disarms every armed herdr-core terminal (local and remote),
+# because the supervisor keeps answering them after the mod and keys are gone.
+# If one cannot be disarmed it exits 1 and removes nothing.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -53,8 +57,44 @@ current_layout() {
   python3 "$config" status-layout <<<"$status"
 }
 
+# Clears the accept labels on every armed herdr-core terminal. Returns 1 when any
+# listing or disarm fails; the caller must then keep the mod and keys installed.
+disarm_core_terminals() {
+  local hc_bin mode listing addresses address disarmed=0 failed=0
+  hc_bin="${HERDR_CORE_BIN:-$(command -v hc || command -v herdr-core || true)}"
+  if [ -z "$hc_bin" ]; then
+    echo "no hc/herdr-core binary found; cannot check for armed terminals (set HERDR_CORE_BIN)" >&2
+    return 0
+  fi
+  for mode in all permissions; do
+    listing="$("$hc_bin" ls --json --label "accept=$mode")" || {
+      echo "could not list terminals armed with accept=$mode: $listing" >&2
+      return 1
+    }
+    addresses="$(python3 "$config" terminal-addresses <<<"$listing")" || {
+      echo "could not read the list of terminals armed with accept=$mode" >&2
+      return 1
+    }
+    while IFS= read -r address; do
+      [ -n "$address" ] || continue
+      if "$hc_bin" label "$address" accept= accept.at= >/dev/null; then
+        disarmed=$((disarmed + 1))
+      else
+        echo "could not disarm $address" >&2
+        failed=$((failed + 1))
+      fi
+    done <<<"$addresses"
+  done
+  if [ "$failed" -gt 0 ]; then
+    echo "$failed armed terminal(s) could not be disarmed; nothing was removed. Disarm them, then run --uninstall again." >&2
+    return 1
+  fi
+  echo "disarmed $disarmed herdr-core terminal(s)"
+}
+
 uninstall() {
   local current target switched=""
+  disarm_core_terminals
   read_status
   current="$(current_layout)"
   target=main

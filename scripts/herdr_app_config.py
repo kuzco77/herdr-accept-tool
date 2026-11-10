@@ -8,6 +8,7 @@ usage:
   herdr_app_config.py set-header <layout.json> <mod>   frame panes with <mod> as header
   herdr_app_config.py status-layout             print "layout" from `herdr-app status` JSON on stdin
   herdr_app_config.py status-errors             print "errors" from that JSON; exit 1 when any
+  herdr_app_config.py terminal-addresses        print each "address" from `hc ls --json` on stdin
 
 keys.json is copied once to keys.json.accept-backup before the first write.
 Missing files are an error: nothing is created.
@@ -158,6 +159,21 @@ def _status_errors() -> int:
     return 1 if errors else 0
 
 
+def _terminal_addresses() -> int:
+    terminals = _stdin_json().get("terminals") or []
+    if not isinstance(terminals, list):
+        raise ConfigError("stdin: terminals is not a list")
+    addresses = []
+    for terminal in terminals:
+        address = terminal.get("address") if isinstance(terminal, dict) else None
+        if not isinstance(address, str) or not address:
+            raise ConfigError("stdin: terminal without an address: %s" % json.dumps(terminal)[:80])
+        addresses.append(address)
+    for address in addresses:
+        print(address)
+    return 0
+
+
 def main(argv: List[str]) -> int:
     try:
         if len(argv) == 2 and argv[0] == "check-keys":
@@ -170,6 +186,8 @@ def main(argv: List[str]) -> int:
             return _status_layout()
         if argv == ["status-errors"]:
             return _status_errors()
+        if argv == ["terminal-addresses"]:
+            return _terminal_addresses()
     except (ConfigError, ValueError) as exc:
         sys.stderr.write("%s\n" % exc)
         return 1
