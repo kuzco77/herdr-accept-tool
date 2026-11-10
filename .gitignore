@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 .DS_Store
 .investtal/
+
+# Written into the mod folder by herdr-app on load.
+herdr-app/accept-header/gpui-kit.d.ts
+herdr-app/accept-header/jsconfig.json
