@@ -56,11 +56,18 @@ export function hcErrorMessage(result) {
   return (message || stderr || stdout || `hc exited with code ${result.code}`).slice(0, MESSAGE_CAP);
 }
 
-/** True for the one copy that handles disarm-all: the first pane of the current tab, in `panes` order. */
-export function isDisarmAllActor(myPane, panes, currentTab) {
-  if (!myPane || !currentTab) return false;
-  const first = panes.find((p) => p.tab === currentTab);
-  return first?.pane === myPane;
+/**
+ * True for the one copy per tab that handles disarm-all. `focus` is {pane, tab} from `focused()`.
+ * Actor: the focused pane when it belongs to the current tab, else the tab's zoomed pane
+ * (the only shown header under zoom), else the tab's first pane in `panes` order.
+ */
+export function isDisarmAllActor(myPane, panes, focus) {
+  const tab = focus?.tab;
+  if (!myPane || !tab) return false;
+  const inTab = panes.filter((p) => p.tab === tab);
+  const focusedHere = focus.pane ? inTab.find((p) => p.pane === focus.pane) : undefined;
+  const actor = focusedHere ?? inTab.find((p) => p.zoomed) ?? inTab[0];
+  return actor?.pane === myPane;
 }
 
 /**

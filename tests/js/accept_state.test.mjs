@@ -79,23 +79,61 @@ test("hcErrorMessage caps the message at 200 characters", () => {
 });
 
 const PANES = [
-  { pane: "p1", tab: "tabA" },
-  { pane: "p2", tab: "tabB" },
-  { pane: "p3", tab: "tabB" },
+  { pane: "p1", tab: "tabA", zoomed: false },
+  { pane: "p2", tab: "tabB", zoomed: false },
+  { pane: "p3", tab: "tabB", zoomed: false },
+  { pane: "p4", tab: "tabB", zoomed: false },
 ];
+const withZoom = (zoomedPane) => PANES.map((p) => ({ ...p, zoomed: p.pane === zoomedPane }));
 
-test("isDisarmAllActor picks the first pane of the current tab only", () => {
-  assert.equal(isDisarmAllActor("p2", PANES, "tabB"), true);
-  assert.equal(isDisarmAllActor("p3", PANES, "tabB"), false);
-  assert.equal(isDisarmAllActor("p1", PANES, "tabB"), false);
-  assert.equal(isDisarmAllActor("p1", PANES, "tabA"), true);
+test("isDisarmAllActor: the focused pane of the current tab wins", () => {
+  const focus = { pane: "p3", tab: "tabB" };
+  assert.equal(isDisarmAllActor("p3", PANES, focus), true);
+  assert.equal(isDisarmAllActor("p2", PANES, focus), false);
+  assert.equal(isDisarmAllActor("p4", PANES, focus), false);
+});
+
+test("isDisarmAllActor: the focused pane wins over a zoomed other pane", () => {
+  const focus = { pane: "p3", tab: "tabB" };
+  assert.equal(isDisarmAllActor("p3", withZoom("p4"), focus), true);
+  assert.equal(isDisarmAllActor("p4", withZoom("p4"), focus), false);
+});
+
+test("isDisarmAllActor: the zoomed pane wins when nothing in the tab is focused", () => {
+  const focus = { pane: null, tab: "tabB" };
+  assert.equal(isDisarmAllActor("p4", withZoom("p4"), focus), true);
+  assert.equal(isDisarmAllActor("p2", withZoom("p4"), focus), false);
+  assert.equal(isDisarmAllActor("p3", withZoom("p4"), focus), false);
+});
+
+test("isDisarmAllActor: the first pane of the tab otherwise", () => {
+  const focus = { pane: null, tab: "tabB" };
+  assert.equal(isDisarmAllActor("p2", PANES, focus), true);
+  assert.equal(isDisarmAllActor("p3", PANES, focus), false);
+  assert.equal(isDisarmAllActor("p4", PANES, focus), false);
+});
+
+test("isDisarmAllActor: a focused pane outside the current tab is ignored", () => {
+  const focus = { pane: "p1", tab: "tabB" };
+  assert.equal(isDisarmAllActor("p1", PANES, focus), false);
+  assert.equal(isDisarmAllActor("p2", PANES, focus), true);
+});
+
+test("isDisarmAllActor: a copy in another tab never acts", () => {
+  const focused = { pane: "p3", tab: "tabB" };
+  const unfocused = { pane: null, tab: "tabB" };
+  assert.equal(isDisarmAllActor("p1", PANES, focused), false);
+  assert.equal(isDisarmAllActor("p1", withZoom("p4"), focused), false);
+  assert.equal(isDisarmAllActor("p1", PANES, unfocused), false);
+  assert.equal(isDisarmAllActor("p1", withZoom("p1"), unfocused), false);
 });
 
 test("isDisarmAllActor is false without a pane, a tab or a matching pane", () => {
-  assert.equal(isDisarmAllActor(undefined, PANES, "tabB"), false);
-  assert.equal(isDisarmAllActor("p2", PANES, null), false);
-  assert.equal(isDisarmAllActor("p2", PANES, "tabZ"), false);
-  assert.equal(isDisarmAllActor("p2", [], "tabB"), false);
+  assert.equal(isDisarmAllActor(undefined, PANES, { pane: "p3", tab: "tabB" }), false);
+  assert.equal(isDisarmAllActor("p2", PANES, { pane: null, tab: null }), false);
+  assert.equal(isDisarmAllActor("p2", PANES, undefined), false);
+  assert.equal(isDisarmAllActor("p2", PANES, { pane: null, tab: "tabZ" }), false);
+  assert.equal(isDisarmAllActor("p2", [], { pane: null, tab: "tabB" }), false);
 });
 
 test("currentMode uses the labels when nothing was written", () => {

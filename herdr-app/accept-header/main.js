@@ -3,8 +3,8 @@
 // only). Clicking the marker cycles off → ⚡ → 🔐 → off. Key commands from
 // keys.json (accept-header.toggle, .toggle-permissions, .disarm-all) reach every
 // copy. toggle and toggle-permissions act in the copy of the focused pane only;
-// disarm-all acts in the copy of the first pane of the current tab, so it works
-// without a focused pane. Props: { pane, terminal }.
+// disarm-all acts in one copy per tab: the focused pane's, else the zoomed pane's,
+// else the first pane's, so it works under zoom and without a focused pane. Props: { pane, terminal }.
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
@@ -57,20 +57,20 @@ export default class AcceptHeader extends View {
   handles(command) {
     const mine = props()?.pane;
     if (!mine) return false;
-    if (command === "disarm-all") return isDisarmAllActor(mine, panes(), focused()?.tab);
+    if (command === "disarm-all") return isDisarmAllActor(mine, panes(), focused());
     return focused()?.pane === mine;
   }
 
   /** Runs `task` after the earlier ones of this copy. Never rejects: a failure becomes a toast. */
   enqueue(task) {
-    const run = this.queue.then(async () => {
+    const next = this.queue.then(async () => {
       try {
         await task();
       } catch (e) {
         notify({ title: "auto-accept failed", body: String(e?.message ?? e).slice(0, 200), level: "error" });
       }
     });
-    this.queue = run.catch(() => {});
+    this.queue = next.catch(() => {});
     return this.queue;
   }
 
