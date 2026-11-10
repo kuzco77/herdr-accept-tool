@@ -329,6 +329,12 @@ class HeartbeatTest(unittest.TestCase):
             state.touch_heartbeat()
         self.assertEqual(state.HEARTBEAT_FILE.read_text(), "1234")
 
+    def test_core_ok_holds_epoch(self) -> None:
+        with mock.patch("accept_state.time.time", return_value=4321.9):
+            state.touch_core_ok()
+        self.assertEqual(state.CORE_OK_FILE.read_text(), "4321")
+        self.assertEqual(state.CORE_OK_FILE.parent, state.HEARTBEAT_FILE.parent)
+
 
 from supervisor import CoreSource, Supervisor, TuiSource, build_parser  # noqa: E402
 
@@ -455,17 +461,51 @@ class SourceFailureIsolationTest(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt):
             self.supervisor(interrupted).cycle()
 
-    def test_unexpected_error_while_reading_backs_off_the_source(self) -> None:
+    def test_unexpected_error_for_one_target_does_not_back_off_the_source(self) -> None:
         core = FakeSource(
             "core", {"t17": core_armed("t17")}, {"t17": {}}, {"t17": "claude"}, backend=UnreadableScreen()
         )
-        other = self.healthy_core()
-        other.name = "other"
-        supervisor = self.supervisor(core, other)
-        self.assertTrue(supervisor.cycle())
+        supervisor = self.supervisor(core)
         supervisor.cycle()
-        self.assertEqual(core.snapshots, 1)
-        self.assertEqual(other.backend.sent, [("t17", ["Enter"])])
+        supervisor.cycle()
+        self.assertEqual(core.snapshots, 2)
+        self.assertNotIn("core", supervisor.retry)
+
+    def test_unexpected_error_for_one_target_is_logged_for_that_target(self) -> None:
+        core = FakeSource(
+            "core", {"t17": core_armed("t17")}, {"t17": {}}, {"t17": "claude"}, backend=UnreadableScreen()
+        )
+        with mock.patch("supervisor.log") as log:
+            self.supervisor(core).cycle()
+        message = log.call_args[0][0]
+        for part in ("t17", "TypeError", "screen is not text"):
+            self.assertIn(part, message)
+
+    def test_unexpected_error_for_one_target_leaves_siblings_answered(self) -> None:
+        class FailsFor(RecordingBackend):
+            def read_screen(self, target, lines):
+                if target == "t17":
+                    raise TypeError("screen is not text")
+                return super().read_screen(target, lines)
+
+        backend = FailsFor(cc.PERMISSION)
+        armed = {"t17": core_armed("t17"), "t18": core_armed("t18")}
+        core = FakeSource(
+            "core", armed, {"t17": {}, "t18": {}}, {"t17": "claude", "t18": "claude"}, backend=backend
+        )
+        self.assertTrue(self.supervisor(core).cycle())
+        self.assertEqual(backend.sent, [("t18", ["Enter"])])
+
+    def test_keyboard_interrupt_while_answering_still_propagates(self) -> None:
+        class Interrupted(RecordingBackend):
+            def read_screen(self, target, lines):
+                raise KeyboardInterrupt()
+
+        core = FakeSource(
+            "core", {"t17": core_armed("t17")}, {"t17": {}}, {"t17": "claude"}, backend=Interrupted()
+        )
+        with self.assertRaises(KeyboardInterrupt):
+            self.supervisor(core).cycle()
 
     def test_failed_key_send_does_not_stop_other_targets(self) -> None:
         backend = SendFailsFor(cc.PERMISSION, failing_target="t17")
@@ -484,6 +524,60 @@ class SourceFailureIsolationTest(unittest.TestCase):
         supervisor.cycle()
         self.assertEqual(core.snapshots, 2)
         self.assertNotIn("core", supervisor.retry)
+
+
+class DryRunTest(unittest.TestCase):
+    def supervisor(self, *sources):
+        return Supervisor(build_parser().parse_args(["--settle", "0", "--dry-run"]), sources=list(sources))
+
+    def test_dry_run_does_not_disarm_an_expired_target(self) -> None:
+        core = FakeSource("core", {"t17": core_armed("t17", armed_at=0.0)}, {"t17": {}}, {"t17": "claude"})
+        with mock.patch("supervisor.log") as log:
+            self.supervisor(core).cycle()
+        self.assertEqual(core.disarmed, [])
+        self.assertIn("would disarm", log.call_args[0][0])
+        self.assertIn("ttl expired", log.call_args[0][0])
+
+    def test_dry_run_does_not_disarm_a_closed_target(self) -> None:
+        core = FakeSource("core", {"t17": core_armed("t17")}, {}, {})
+        self.supervisor(core).cycle()
+        self.assertEqual(core.disarmed, [])
+
+    def test_without_dry_run_expired_target_is_disarmed(self) -> None:
+        core = FakeSource("core", {"t17": core_armed("t17", armed_at=0.0)}, {"t17": {}}, {"t17": "claude"})
+        Supervisor(build_parser().parse_args(["--settle", "0"]), sources=[core]).cycle()
+        self.assertEqual(core.disarmed, [("t17", "ttl expired", True)])
+
+    def test_dry_run_keeps_armed_json_of_the_tui_source(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        for name, value in (("STATE_DIR", Path(directory.name)), ("STATE_FILE", Path(directory.name) / "armed.json")):
+            patcher = mock.patch.object(state, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        state.arm_pane(state.Armed(pane_id="w1:p1", cwd="/tmp", armed_at=0.0, ttl=60.0, label_before="build"))
+        with mock.patch("supervisor.herdr.list_panes", return_value={"w1:p1": {}}), mock.patch(
+            "supervisor.herdr.pane_process_name", return_value="claude"
+        ), mock.patch("supervisor.herdr.rename_pane") as rename, mock.patch("supervisor.herdr.notify") as notify:
+            self.supervisor(TuiSource()).cycle()
+        self.assertEqual(list(state.load_state()), ["w1:p1"])
+        rename.assert_not_called()
+        notify.assert_not_called()
+
+
+class CoreOkTest(unittest.TestCase):
+    def test_core_snapshot_touches_core_ok_after_success(self) -> None:
+        with mock.patch("core_api.run_hc", side_effect=fake_hc({})), mock.patch("supervisor.state.touch_core_ok") as touch:
+            CoreSource().snapshot()
+        touch.assert_called_once_with()
+
+    def test_core_snapshot_does_not_touch_core_ok_when_hc_fails(self) -> None:
+        with mock.patch("core_api.run_hc", side_effect=HerdrError("hc missing")), mock.patch(
+            "supervisor.state.touch_core_ok"
+        ) as touch:
+            with self.assertRaises(HerdrError):
+                CoreSource().snapshot()
+        touch.assert_not_called()
 
 
 class TuiSourceTest(unittest.TestCase):

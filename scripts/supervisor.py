@@ -117,6 +117,7 @@ class CoreSource:
 
     def snapshot(self) -> Snapshot:
         records = core_api.armed_terminals()
+        state.touch_core_ok()
         armed = {address: core_api.armed_entry(address, record) for address, record in records.items()}
         return armed, records, lambda address: core_api.process_name(records.get(address))
 
@@ -154,6 +155,9 @@ class Supervisor:
         return answerer
 
     def drop(self, source, pane_id: str, reason: str, live: bool) -> None:
+        if self.args.dry_run:
+            log("%s would disarm: %s [dry-run]" % (pane_id, reason))
+            return
         source.disarm(pane_id, reason, live)
         self.answerers.pop(pane_id, None)
         self.idle_reported.pop(pane_id, None)
@@ -185,6 +189,8 @@ class Supervisor:
                     time.sleep(self.args.settle)
             except HerdrError as error:
                 log("%s read or answer failed: %s" % (pane_id, error))
+            except Exception as error:
+                log("%s read or answer failed (%s): %s" % (pane_id, type(error).__name__, error))
         return bool(plan.active)
 
     def cycle(self) -> bool:

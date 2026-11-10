@@ -25,6 +25,7 @@ STATE_DIR = Path(
 ).expanduser()
 STATE_FILE = STATE_DIR / "armed.json"
 HEARTBEAT_FILE = STATE_DIR / "supervisor.heartbeat"
+CORE_OK_FILE = STATE_DIR / "core.ok"
 LOG_FILE = STATE_DIR / "supervisor.log"
 DEFAULT_TTL_SECONDS = float(os.environ.get("HERDR_ACCEPT_TTL") or 12 * 3600)
 # Pane label prefix per mode: ⚡ answers everything, 🔐 answers permissions only.
@@ -90,6 +91,14 @@ def touch_heartbeat() -> None:
     """Epoch seconds as content: the herdr-app mod reads it (mods cannot stat)."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     HEARTBEAT_FILE.write_text("%d" % time.time())
+
+
+def touch_core_ok() -> None:
+    """Epoch seconds of the last successful herdr-core snapshot. Replaced atomically so the mod never reads half a number."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = CORE_OK_FILE.with_suffix(".ok.tmp")
+    tmp.write_text("%d" % time.time())
+    os.replace(tmp, CORE_OK_FILE)
 
 
 def supervisor_alive(max_age: float = 15.0) -> bool:
