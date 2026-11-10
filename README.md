@@ -205,9 +205,23 @@ mod as the pane header, and binds:
 | `ctrl-a shift-y` | disarm every herdr-core terminal |
 
 The header shows the terminal address after the name (`Claude Code · t17 ⚡`);
-clicking the marker cycles off → `⚡` → `🔐` → off. `--uninstall` switches back
-to `main` and removes the layout, the link and the keys. The CLI takes
+clicking the marker cycles off → `⚡` → `🔐` → off. The CLI takes
 herdr-core terminals too: `herdr-accept-tool core:t17`.
+
+The installer needs `herdr-app` on `PATH` and the Herdr window open (it reads
+`herdr-app status` and switches layouts through the window). It checks
+`keys.json` first and stops before changing anything when the file is missing,
+is not valid JSON, or already binds one of the three keys to something else.
+`keys.json` is rewritten as 2-space JSON; the original is copied once to
+`keys.json.accept-backup` (kept if it already exists). The layout shown before
+the switch is saved in `~/.local/state/herdr-accept-tool/herdr-app-prev-layout`.
+After the edits it polls `herdr-app status` for about 3 s and fails, printing
+the errors, if the app rejects a file.
+
+`bash scripts/install-herdr-app.sh --uninstall` (window open) switches back to
+the saved layout (`main` when none is saved), then removes `main-accept`, the
+link and our keys. If that switch fails it changes nothing, says so, and exits 1;
+re-run it once the window works.
 
 ### Safety rules in the supervisor
 
