@@ -8,6 +8,7 @@ go away with the terminal, so there is nothing to prune.
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -39,7 +40,7 @@ def armed_terminals() -> Dict[str, dict]:
     for mode in MODES:
         listing = _json(run_hc(["ls", "--json", "--label", "%s=%s" % (LABEL_MODE, mode)]))
         for terminal in listing.get("terminals") or []:
-            address = terminal.get("address")
+            address = terminal.get("address") if isinstance(terminal, dict) else None
             if not isinstance(address, str):
                 continue
             try:
@@ -50,11 +51,15 @@ def armed_terminals() -> Dict[str, dict]:
 
 
 def armed_entry(address: str, record: dict, ttl: float = state.DEFAULT_TTL_SECONDS) -> state.Armed:
-    labels = record.get("labels") or {}
+    labels = record.get("labels")
+    if not isinstance(labels, dict):
+        labels = {}
     try:
         armed_at = float(labels.get(LABEL_AT, ""))
-    except ValueError:
+    except (ValueError, TypeError):
         armed_at = 0.0
+    if not math.isfinite(armed_at):
+        armed_at = 0.0  # nan/inf would never expire, leaving the terminal armed forever
     return state.Armed(
         pane_id=address,
         cwd=record.get("cwd") or "",

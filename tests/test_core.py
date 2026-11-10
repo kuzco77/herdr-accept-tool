@@ -165,6 +165,27 @@ class CoreApiTest(unittest.TestCase):
         record = dict(T17, labels={"accept": "all", "accept.at": "soon"})
         self.assertTrue(core_api.armed_entry("t17", record, ttl=60.0).expired(now=61.0))
 
+    def test_non_finite_or_missing_armed_at_expires_at_once(self) -> None:
+        for raw in ("nan", "inf", "1e400", None):
+            with self.subTest(armed_at=raw):
+                record = dict(T17, labels={"accept": "all", "accept.at": raw})
+                self.assertTrue(core_api.armed_entry("t17", record, ttl=60.0).expired(now=61.0))
+
+    def test_non_dict_labels_are_treated_as_empty(self) -> None:
+        record = dict(T17, labels=["accept"])
+        entry = core_api.armed_entry("t17", record, ttl=60.0)
+        self.assertEqual((entry.mode, entry.armed_at), (MODE_ALL, 0.0))
+        self.assertTrue(entry.expired(now=61.0))
+
+    def test_non_dict_listing_entry_is_skipped(self) -> None:
+        def run(args):
+            if args[0] == "ls":
+                return json.dumps({"terminals": ["t99", None, {"address": "t17"}]})
+            return json.dumps(T17)
+
+        with mock.patch("core_api.run_hc", side_effect=run):
+            self.assertEqual(sorted(core_api.armed_terminals()), ["t17"])
+
     def test_process_name_uses_argv_not_version_name(self) -> None:
         self.assertEqual(core_api.process_name(T17), "claude")
         self.assertEqual(core_api.process_name({"foreground": {"argv": ["/bin/zsh", "-l"]}}), "zsh")
