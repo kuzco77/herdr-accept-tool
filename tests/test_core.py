@@ -90,5 +90,25 @@ class AnswererBackendTest(unittest.TestCase):
         self.assertIsInstance(Answerer(pane_id="w1:p1", prefer=PREFER).backend, TuiBackend)
 
 
+class ResolveTargetTest(unittest.TestCase):
+    def test_core_prefix_checks_terminal_and_uses_core_backend(self) -> None:
+        with mock.patch("herdr_accept_tool.run_hc", return_value="{}") as run:
+            target, backend = tool.resolve_target("core:t17")
+        run.assert_called_once_with(["get", "t17"])
+        self.assertEqual(target, "t17")
+        self.assertIsInstance(backend, CoreBackend)
+
+    def test_other_targets_use_tui(self) -> None:
+        with mock.patch("herdr_accept_tool.resolve_pane", return_value="w26:p4D"):
+            target, backend = tool.resolve_target("my-agent")
+        self.assertEqual(target, "w26:p4D")
+        self.assertIsInstance(backend, TuiBackend)
+
+    def test_unknown_core_terminal_raises(self) -> None:
+        with mock.patch("herdr_accept_tool.run_hc", side_effect=HerdrError('no terminal "t99"')):
+            with self.assertRaises(HerdrError):
+                tool.resolve_target("core:t99")
+
+
 if __name__ == "__main__":
     unittest.main()

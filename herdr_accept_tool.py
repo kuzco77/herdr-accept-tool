@@ -2,7 +2,7 @@
 """Auto-answer interactive prompts in a herdr-managed agent pane.
 
 Usage:
-    herdr-accept-tool <agent-name|pane-id> [options]
+    herdr-accept-tool <agent-name|pane-id|core:terminal> [options]
 
 Polls the pane screen through the herdr CLI. When a choice dialog is on
 screen (Claude Code permission prompt, AskUserQuestion, plan approval, submit
@@ -42,11 +42,12 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import List, Optional, Protocol, Sequence
+from typing import List, Optional, Protocol, Sequence, Tuple
 
 HERDR = os.environ.get("HERDR_BIN_PATH") or "herdr"
 HC = os.environ.get("HERDR_CORE_BIN") or shutil.which("hc") or "herdr-core"
 PANE_ID_PATTERN = re.compile(r"[A-Za-z0-9]+:[A-Za-z0-9]+")
+CORE_PREFIX = "core:"
 CLAUDE_CURSOR = "❯"
 ANTIGRAVITY_CURSOR = ">"
 ARTIFACT_CURSOR = "›"
@@ -217,6 +218,15 @@ class CoreBackend:
 
     def send_keys(self, target: str, keys: Sequence[str]) -> None:
         run_hc(["keys", target] + [key.lower() for key in keys])
+
+
+def resolve_target(target: str) -> Tuple[str, Backend]:
+    """`core:t17` is a herdr-core terminal; anything else a herdr TUI agent or pane."""
+    if target.startswith(CORE_PREFIX):
+        address = target[len(CORE_PREFIX):]
+        run_hc(["get", address])
+        return address, CoreBackend()
+    return resolve_pane(target), TuiBackend()
 
 
 def question_above(lines: Sequence[str], cutoff: int) -> str:
@@ -467,8 +477,8 @@ class Answerer:
 
 
 def watch(args: argparse.Namespace) -> int:
-    pane_id = resolve_pane(args.target)
-    log("watching pane %s (target %s, mode %s)" % (pane_id, args.target, args.mode), args.quiet)
+    pane_id, backend = resolve_target(args.target)
+    log("watching %s (target %s, mode %s)" % (pane_id, args.target, args.mode), args.quiet)
     answerer = Answerer(
         pane_id=pane_id,
         prefer=re.compile(args.prefer),
@@ -476,6 +486,7 @@ def watch(args: argparse.Namespace) -> int:
         dry_run=args.dry_run,
         quiet=args.quiet,
         mode=args.mode,
+        backend=backend,
     )
     started = time.monotonic()
     while True:
@@ -483,7 +494,7 @@ def watch(args: argparse.Namespace) -> int:
             log("timeout reached", args.quiet)
             return 0
         try:
-            screen = read_screen(pane_id, args.lines)
+            screen = backend.read_screen(pane_id, args.lines)
         except HerdrError as error:
             log("pane gone: %s" % error, args.quiet)
             return 0
@@ -500,7 +511,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="herdr-accept-tool",
         description="Auto-answer Yes / Recommended / first option in a herdr agent pane (Claude Code, Antigravity CLI).",
     )
-    parser.add_argument("target", help="herdr agent name or pane id (e.g. w26:p42)")
+    parser.add_argument("target", help="herdr agent name or pane id (w26:p42), or a herdr-core terminal (core:t17)")
     parser.add_argument("--interval", type=float, default=1.0, help="poll seconds (1.0)")
     parser.add_argument("--settle", type=float, default=1.5, help="pause after answering (1.5)")
     parser.add_argument("--cooldown", type=float, default=10.0, help="seconds before re-answering an identical prompt (10)")
