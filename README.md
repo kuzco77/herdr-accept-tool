@@ -182,6 +182,63 @@ marker is invisible there. Show borders always to see it on every pane:
 pane_borders = "always"
 ```
 
+### Herdr app (herdr-core)
+
+The same supervisor answers prompts in the Herdr desktop app. Its terminals run
+in herdr-core (`hc`); a terminal is armed by two labels on the terminal itself,
+`accept=all|permissions` and `accept.at=<epoch>`, so arming ends with the
+terminal and there is nothing to prune.
+
+```bash
+bash scripts/install-launchd.sh      # the supervisor serves the TUI and herdr-core; re-run after every update
+bash scripts/install-herdr-app.sh    # with the Herdr window open
+```
+
+`install-herdr-app.sh` links `herdr-app/accept-header` into
+`~/.config/herdr-app/mods`, clones the `main` layout as `main-accept` with that
+mod as the pane header, and binds:
+
+| key | effect |
+|---|---|
+| `ctrl-a y` | toggle all dialogs on the focused pane (`⚡`) |
+| `ctrl-a u` | toggle permissions only (`🔐`) |
+| `ctrl-a shift-y` | disarm every herdr-core terminal |
+
+The header shows the terminal address after the name (`Claude Code · t17 ⚡`);
+clicking the marker cycles off → `⚡` → `🔐` → off. The CLI takes
+herdr-core terminals too: `herdr-accept-tool core:t17`.
+
+Re-run `install-launchd.sh` after updating this repo: a plist written by an older
+version has no `HERDR_CORE_BIN`, so the supervisor finds `hc` only through its
+`PATH`. The script needs the TUI `herdr` binary, and warns when it finds no
+`hc`/`herdr-core`. launchd runs `scripts/supervisor.py` from this checkout, so
+switching branches here changes the running supervisor on its next restart.
+
+Remote herdr-core terminals (addresses like `mac-mini-tvf/t1`) are not
+supported. The header refuses to arm them (error toast), and the supervisor
+ignores them unless it runs with `HERDR_ACCEPT_REMOTE=1` (supervisor side only;
+the header still refuses). `ctrl-a shift-y` and `--uninstall` clear the labels
+on remote terminals too. Two supervisors answering one terminal would send
+interleaved keys.
+
+The installer needs `herdr-app` on `PATH` and the Herdr window open (it reads
+`herdr-app status` and switches layouts through the window). It checks
+`keys.json` first and stops before changing anything when the file is missing,
+is not valid JSON, or already binds one of the three keys to something else.
+`keys.json` is rewritten as 2-space JSON; the original is copied once to
+`keys.json.accept-backup` (kept if it already exists). The layout shown before
+the switch is saved in `~/.local/state/herdr-accept-tool/herdr-app-prev-layout`.
+After the edits it polls `herdr-app status` for about 3 s and fails, printing
+the errors, if the app rejects a file.
+
+`bash scripts/install-herdr-app.sh --uninstall` first disarms every armed
+herdr-core terminal (`hc label <t> accept= accept.at=`), because the supervisor
+would keep answering them with no marker and no key to stop it. If one cannot be
+disarmed it exits 1 and removes nothing. Then, with the window open, it switches
+back to the saved layout (`main` when none is saved) and removes `main-accept`,
+the link and our keys. If that switch fails it changes nothing else, says so, and
+exits 1; re-run it once the window works.
+
 ### Safety rules in the supervisor
 
 - A pane only gets key presses while its foreground process is a known agent
@@ -195,8 +252,14 @@ pane_borders = "always"
 - Everything the supervisor answers is logged to
   `~/.local/state/herdr-accept-tool/supervisor.log`.
 
-The toast on arming warns when the supervisor heartbeat is stale, which means
-launchd is not running it.
+The toast on arming (TUI plugin) warns when the supervisor heartbeat is stale,
+which means launchd is not running it. The Herdr app toast also reads `core.ok`
+(`~/.local/state/herdr-accept-tool/core.ok`, written by the supervisor after each
+successful herdr-core snapshot) and warns "supervisor cannot reach herdr-core"
+when it is missing or older than 90 s.
+
+`supervisor.py --dry-run` logs what it would disarm and changes no label, pane
+name or `armed.json`.
 
 ## How it works
 
@@ -231,6 +294,7 @@ labels stops the same dialog being answered twice within `--cooldown`.
 
 ```bash
 python3 -m unittest discover -s tests -v
+node --test tests/js/
 ```
 
 `test_parse.py` and `test_antigravity.py` hold captured screens;

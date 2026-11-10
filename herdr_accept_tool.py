@@ -2,7 +2,7 @@
 """Auto-answer interactive prompts in a herdr-managed agent pane.
 
 Usage:
-    herdr-accept-tool <agent-name|pane-id> [options]
+    herdr-accept-tool <agent-name|pane-id|core:terminal> [options]
 
 Polls the pane screen through the herdr CLI. When a choice dialog is on
 screen (Claude Code permission prompt, AskUserQuestion, plan approval, submit
@@ -37,14 +37,17 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import List, Optional, Sequence
+from typing import List, Optional, Protocol, Sequence, Tuple
 
 HERDR = os.environ.get("HERDR_BIN_PATH") or "herdr"
+HC = os.environ.get("HERDR_CORE_BIN") or shutil.which("hc") or "herdr-core"
 PANE_ID_PATTERN = re.compile(r"[A-Za-z0-9]+:[A-Za-z0-9]+")
+CORE_PREFIX = "core:"
 CLAUDE_CURSOR = "❯"
 ANTIGRAVITY_CURSOR = ">"
 ARTIFACT_CURSOR = "›"
@@ -124,19 +127,37 @@ class HerdrError(RuntimeError):
     """The herdr CLI refused or failed a request."""
 
 
-def run_herdr(args: List[str], timeout: float = 5.0) -> str:
+def _run(binary: str, name: str, args: List[str], timeout: float) -> str:
     try:
         result = subprocess.run(
-            [HERDR] + args, capture_output=True, text=True, timeout=timeout
+            [binary] + args, capture_output=True, text=True, timeout=timeout
         )
     except OSError as error:
-        raise HerdrError("cannot run herdr: %s" % error) from error
+        raise HerdrError("cannot run %s: %s" % (name, error)) from error
     except subprocess.TimeoutExpired as error:
-        raise HerdrError("herdr timed out: %s" % " ".join(args)) from error
+        raise HerdrError("%s timed out: %s" % (name, " ".join(args))) from error
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip().splitlines()
-        raise HerdrError(detail[0] if detail else "herdr exit %d" % result.returncode)
+        raise HerdrError(_failure_detail(name, result))
     return result.stdout
+
+
+def _failure_detail(name: str, result: "subprocess.CompletedProcess[str]") -> str:
+    try:
+        message = json.loads(result.stdout)["error"]["message"]
+        if isinstance(message, str) and message:
+            return message
+    except (ValueError, KeyError, TypeError):
+        pass
+    detail = (result.stderr or result.stdout).strip().splitlines()
+    return detail[0] if detail else "%s exit %d" % (name, result.returncode)
+
+
+def run_herdr(args: List[str], timeout: float = 5.0) -> str:
+    return _run(HERDR, "herdr", args, timeout)
+
+
+def run_hc(args: List[str], timeout: float = 5.0) -> str:
+    return _run(HC, "hc", args, timeout)
 
 
 def resolve_pane(target: str) -> str:
@@ -162,6 +183,50 @@ def read_screen(pane_id: str, lines: int) -> str:
 
 def send_keys(pane_id: str, keys: Sequence[str]) -> None:
     run_herdr(["pane", "send-keys", pane_id] + list(keys))
+
+
+class Backend(Protocol):
+    """Where a target's screen comes from and where its key presses go."""
+
+    def read_screen(self, target: str, lines: int) -> str: ...
+
+    def send_keys(self, target: str, keys: Sequence[str]) -> None: ...
+
+
+class TuiBackend:
+    """herdr TUI panes (`w26:p4D`) through the herdr CLI."""
+
+    def read_screen(self, target: str, lines: int) -> str:
+        return read_screen(target, lines)
+
+    def send_keys(self, target: str, keys: Sequence[str]) -> None:
+        send_keys(target, keys)
+
+
+class CoreBackend:
+    """herdr-core terminals (`t17`) through hc. Reads the visible screen only."""
+
+    def read_screen(self, target: str, lines: int) -> str:
+        raw = run_hc(["read", "--json", target])
+        try:
+            text = json.loads(raw)["text"]
+        except (ValueError, KeyError, TypeError) as error:
+            raise HerdrError("unexpected hc read output: %s" % raw[:80]) from error
+        if not isinstance(text, str):
+            raise HerdrError("unexpected hc read output: %s" % raw[:80])
+        return text
+
+    def send_keys(self, target: str, keys: Sequence[str]) -> None:
+        run_hc(["keys", target] + [key.lower() for key in keys])
+
+
+def resolve_target(target: str) -> Tuple[str, Backend]:
+    """`core:t17` is a herdr-core terminal; anything else a herdr TUI agent or pane."""
+    if target.startswith(CORE_PREFIX):
+        address = target[len(CORE_PREFIX):]
+        run_hc(["get", address])
+        return address, CoreBackend()
+    return resolve_pane(target), TuiBackend()
 
 
 def question_above(lines: Sequence[str], cutoff: int) -> str:
@@ -368,7 +433,9 @@ class Answerer:
     dry_run: bool = False
     quiet: bool = False
     mode: str = MODE_ALL
+    backend: Backend = field(default_factory=TuiBackend)
     answered: dict = field(default_factory=dict)
+    mode_warned: bool = False
 
     def answer(self, screen: str) -> bool:
         """Answer the dialog on ``screen`` if there is one. True when keys were sent.
@@ -376,6 +443,11 @@ class Answerer:
         In permissions mode a question is left on screen and logged once per
         cooldown, so the human can answer it.
         """
+        if self.mode not in MODES:
+            if not self.mode_warned:
+                log("%s unknown mode %r, answering nothing" % (self.pane_id, self.mode), self.quiet)
+                self.mode_warned = True
+            return False
         prompt = parse_prompt(screen)
         if prompt is None:
             return False
@@ -405,14 +477,14 @@ class Answerer:
             self.quiet,
         )
         if not self.dry_run:
-            send_keys(self.pane_id, keys)
+            self.backend.send_keys(self.pane_id, keys)
         self.answered[key] = time.monotonic()
         return True
 
 
 def watch(args: argparse.Namespace) -> int:
-    pane_id = resolve_pane(args.target)
-    log("watching pane %s (target %s, mode %s)" % (pane_id, args.target, args.mode), args.quiet)
+    pane_id, backend = resolve_target(args.target)
+    log("watching %s (target %s, mode %s)" % (pane_id, args.target, args.mode), args.quiet)
     answerer = Answerer(
         pane_id=pane_id,
         prefer=re.compile(args.prefer),
@@ -420,6 +492,7 @@ def watch(args: argparse.Namespace) -> int:
         dry_run=args.dry_run,
         quiet=args.quiet,
         mode=args.mode,
+        backend=backend,
     )
     started = time.monotonic()
     while True:
@@ -427,7 +500,7 @@ def watch(args: argparse.Namespace) -> int:
             log("timeout reached", args.quiet)
             return 0
         try:
-            screen = read_screen(pane_id, args.lines)
+            screen = backend.read_screen(pane_id, args.lines)
         except HerdrError as error:
             log("pane gone: %s" % error, args.quiet)
             return 0
@@ -444,7 +517,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="herdr-accept-tool",
         description="Auto-answer Yes / Recommended / first option in a herdr agent pane (Claude Code, Antigravity CLI).",
     )
-    parser.add_argument("target", help="herdr agent name or pane id (e.g. w26:p42)")
+    parser.add_argument("target", help="herdr agent name or pane id (w26:p42), or a herdr-core terminal (core:t17)")
     parser.add_argument("--interval", type=float, default=1.0, help="poll seconds (1.0)")
     parser.add_argument("--settle", type=float, default=1.5, help="pause after answering (1.5)")
     parser.add_argument("--cooldown", type=float, default=10.0, help="seconds before re-answering an identical prompt (10)")
