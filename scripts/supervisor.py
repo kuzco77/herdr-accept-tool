@@ -159,48 +159,54 @@ class Supervisor:
         self.idle_reported.pop(pane_id, None)
         log("%s disarmed: %s" % (pane_id, reason))
 
-    def snapshot(self, source, now: float) -> Optional[Snapshot]:
-        """The source's armed targets, or None while it is backing off."""
-        retry_at, backoff = self.retry.get(source.name, (0.0, BACKOFF_MIN))
-        if now < retry_at:
-            return None
-        try:
-            snap = source.snapshot()
-        except HerdrError as error:
-            log("%s unavailable (%s), retry in %.0fs" % (source.name, error, backoff))
-            self.retry[source.name] = (now + backoff, min(backoff * 2, BACKOFF_MAX))
-            return None
-        self.retry.pop(source.name, None)
-        return snap
+    def back_off(self, source, now: float, problem: str) -> None:
+        _retry_at, backoff = self.retry.get(source.name, (0.0, BACKOFF_MIN))
+        log("%s %s, retry in %.0fs" % (source.name, problem, backoff))
+        self.retry[source.name] = (now + backoff, min(backoff * 2, BACKOFF_MAX))
+
+    def run_source(self, source, now: float) -> bool:
+        """One pass over one source. Returns True when any of its targets is active."""
+        armed, live, process_of = source.snapshot()
+        if not armed:
+            return False
+        plan = plan_cycle(armed, live, now, process_of)
+        for pane_id, reason in plan.dropped.items():
+            self.drop(source, pane_id, reason, live=pane_id in live)
+        for pane_id, process in plan.idle.items():
+            if self.idle_reported.get(pane_id) != process:
+                log("%s idle: foreground is %s, waiting for an agent" % (pane_id, process))
+                self.idle_reported[pane_id] = process
+        for pane_id in plan.active:
+            self.idle_reported.pop(pane_id, None)
+            try:
+                screen = source.backend.read_screen(pane_id, SCREEN_LINES)
+                answerer = self.answerer_for(pane_id, armed[pane_id].mode, source.backend)
+                if answerer.answer(screen):
+                    time.sleep(self.args.settle)
+            except HerdrError as error:
+                log("%s read or answer failed: %s" % (pane_id, error))
+        return bool(plan.active)
 
     def cycle(self) -> bool:
-        """One pass over every source. Returns True when any target is active."""
+        """One pass over every source. Returns True when any target is active.
+
+        A source that raises is put into backoff; the others still run.
+        """
         state.touch_heartbeat()
         now = time.time()
         any_active = False
         for source in self.sources:
-            snap = self.snapshot(source, now)
-            if not snap or not snap[0]:
+            retry_at, _backoff = self.retry.get(source.name, (0.0, BACKOFF_MIN))
+            if now < retry_at:
                 continue
-            armed, live, process_of = snap
-            plan = plan_cycle(armed, live, now, process_of)
-            for pane_id, reason in plan.dropped.items():
-                self.drop(source, pane_id, reason, live=pane_id in live)
-            for pane_id, process in plan.idle.items():
-                if self.idle_reported.get(pane_id) != process:
-                    log("%s idle: foreground is %s, waiting for an agent" % (pane_id, process))
-                    self.idle_reported[pane_id] = process
-            for pane_id in plan.active:
-                any_active = True
-                self.idle_reported.pop(pane_id, None)
-                try:
-                    screen = source.backend.read_screen(pane_id, SCREEN_LINES)
-                except HerdrError as error:
-                    log("%s read failed: %s" % (pane_id, error))
-                    continue
-                answerer = self.answerer_for(pane_id, armed[pane_id].mode, source.backend)
-                if answerer.answer(screen):
-                    time.sleep(self.args.settle)
+            try:
+                any_active = self.run_source(source, now) or any_active
+            except HerdrError as error:
+                self.back_off(source, now, "unavailable (%s)" % error)
+            except Exception as error:
+                self.back_off(source, now, "failed (%s: %s)" % (type(error).__name__, error))
+            else:
+                self.retry.pop(source.name, None)
         return any_active
 
     def run(self) -> int:
