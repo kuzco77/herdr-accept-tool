@@ -34,7 +34,6 @@ die() {
   exit 1
 }
 
-# Sets $status; fails with a hint when the Herdr window is closed.
 read_status() {
   status="$(herdr-app status 2>&1)" || {
     echo "herdr-app status failed; open the Herdr window and run this again:" >&2

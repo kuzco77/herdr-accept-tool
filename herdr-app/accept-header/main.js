@@ -64,7 +64,6 @@ export default class AcceptHeader extends View {
     return focused()?.pane === mine;
   }
 
-  /** Runs `task` after the earlier ones of this copy. Never rejects: a failure becomes a toast. */
   enqueue(task) {
     const next = this.queue.then(async () => {
       try {
