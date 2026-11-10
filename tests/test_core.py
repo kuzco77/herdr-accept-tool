@@ -174,7 +174,7 @@ class CoreApiTest(unittest.TestCase):
     def test_non_dict_labels_are_treated_as_empty(self) -> None:
         record = dict(T17, labels=["accept"])
         entry = core_api.armed_entry("t17", record, ttl=60.0)
-        self.assertEqual((entry.mode, entry.armed_at), (MODE_ALL, 0.0))
+        self.assertEqual((entry.mode, entry.armed_at), ("", 0.0))
         self.assertTrue(entry.expired(now=61.0))
 
     def test_non_dict_listing_entry_is_skipped(self) -> None:
@@ -197,6 +197,130 @@ class CoreApiTest(unittest.TestCase):
         with mock.patch("core_api.run_hc") as run:
             core_api.disarm("t17")
         run.assert_called_once_with(["label", "t17", "accept=", "accept.at="])
+
+
+REMOTE = dict(T17, address="mac-mini-tvf/t1")
+
+
+class RemoteTerminalTest(unittest.TestCase):
+    def setUp(self) -> None:
+        core_api._reported.clear()
+
+    def armed(self, records):
+        with mock.patch("core_api.run_hc", side_effect=fake_hc(records)):
+            return core_api.armed_terminals()
+
+    def test_remote_terminals_are_skipped_by_default(self) -> None:
+        with mock.patch.dict(os.environ, {"HERDR_ACCEPT_REMOTE": ""}):
+            found = self.armed({"t17": T17, "mac-mini-tvf/t1": REMOTE})
+        self.assertEqual(sorted(found), ["t17"])
+
+    def test_remote_terminals_are_kept_when_enabled(self) -> None:
+        with mock.patch.dict(os.environ, {"HERDR_ACCEPT_REMOTE": "1"}):
+            found = self.armed({"t17": T17, "mac-mini-tvf/t1": REMOTE})
+        self.assertEqual(sorted(found), ["mac-mini-tvf/t1", "t17"])
+
+    def test_other_values_do_not_enable_remote(self) -> None:
+        with mock.patch.dict(os.environ, {"HERDR_ACCEPT_REMOTE": "true"}):
+            self.assertEqual(self.armed({"mac-mini-tvf/t1": REMOTE}), {})
+
+    def test_skipped_remote_is_not_fetched_and_logged_once(self) -> None:
+        calls = []
+        listed = fake_hc({"mac-mini-tvf/t1": REMOTE})
+
+        def run(args):
+            calls.append(args[0])
+            return listed(args)
+
+        with mock.patch.dict(os.environ, {"HERDR_ACCEPT_REMOTE": ""}), mock.patch(
+            "core_api.run_hc", side_effect=run
+        ), mock.patch("core_api.log") as log:
+            core_api.armed_terminals()
+            core_api.armed_terminals()
+        self.assertNotIn("get", calls)
+        self.assertEqual(log.call_count, 1)
+        self.assertIn("mac-mini-tvf/t1", log.call_args[0][0])
+
+
+class UnknownModeTest(unittest.TestCase):
+    def setUp(self) -> None:
+        core_api._reported.clear()
+
+    def test_terminal_without_accept_label_after_get_is_skipped(self) -> None:
+        listed = fake_hc({"t17": T17})
+
+        def run(args):
+            if args[0] == "get":
+                return json.dumps(dict(T17, labels={"herdr.space": "sp1"}))
+            return listed(args)
+
+        with mock.patch("core_api.run_hc", side_effect=run):
+            self.assertEqual(core_api.armed_terminals(), {})
+
+    def test_terminal_with_unknown_accept_value_is_skipped(self) -> None:
+        listed = fake_hc({"t17": T17})
+
+        def run(args):
+            if args[0] == "get":
+                return json.dumps(dict(T17, labels={"accept": "bogus", "accept.at": "1000"}))
+            return listed(args)
+
+        with mock.patch("core_api.run_hc", side_effect=run):
+            self.assertEqual(core_api.armed_terminals(), {})
+
+    def test_armed_entry_without_mode_has_no_mode(self) -> None:
+        record = dict(T17, labels={"accept.at": "1000"})
+        self.assertEqual(core_api.armed_entry("t17", record).mode, "")
+
+    def test_answerer_sends_nothing_for_a_mode_outside_modes(self) -> None:
+        for mode in ("", "bogus"):
+            with self.subTest(mode=mode):
+                backend = RecordingBackend(cc.PERMISSION)
+                answerer = Answerer(pane_id="t17", prefer=PREFER, mode=mode, backend=backend, quiet=True)
+                self.assertFalse(answerer.answer(cc.PERMISSION))
+                self.assertEqual(backend.sent, [])
+
+    def test_answerer_logs_unknown_mode_once(self) -> None:
+        backend = RecordingBackend(cc.PERMISSION)
+        answerer = Answerer(pane_id="t17", prefer=PREFER, mode="bogus", backend=backend)
+        with mock.patch("herdr_accept_tool.log") as log:
+            answerer.answer(cc.PERMISSION)
+            answerer.answer(cc.PERMISSION)
+        self.assertEqual(log.call_count, 1)
+        self.assertIn("bogus", log.call_args[0][0])
+
+
+class GetFailureLogTest(unittest.TestCase):
+    def setUp(self) -> None:
+        core_api._reported.clear()
+
+    def run_with_failing_get(self, message="hc timed out"):
+        listed = fake_hc({"t17": T17})
+
+        def run(args):
+            if args[0] == "get":
+                raise HerdrError(message)
+            return listed(args)
+
+        return mock.patch("core_api.run_hc", side_effect=run)
+
+    def test_failed_get_is_logged_with_address_and_message(self) -> None:
+        with self.run_with_failing_get(), mock.patch("core_api.log") as log:
+            self.assertEqual(core_api.armed_terminals(), {})
+        text = log.call_args[0][0]
+        self.assertIn("t17", text)
+        self.assertIn("hc timed out", text)
+
+    def test_same_failure_is_logged_once_until_it_recovers(self) -> None:
+        with self.run_with_failing_get(), mock.patch("core_api.log") as log:
+            core_api.armed_terminals()
+            core_api.armed_terminals()
+        self.assertEqual(log.call_count, 1)
+        with mock.patch("core_api.run_hc", side_effect=fake_hc({"t17": T17})):
+            self.assertEqual(sorted(core_api.armed_terminals()), ["t17"])
+        with self.run_with_failing_get(), mock.patch("core_api.log") as log:
+            core_api.armed_terminals()
+        self.assertEqual(log.call_count, 1)
 
 
 class HeartbeatTest(unittest.TestCase):

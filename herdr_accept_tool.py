@@ -435,6 +435,7 @@ class Answerer:
     mode: str = MODE_ALL
     backend: Backend = field(default_factory=TuiBackend)
     answered: dict = field(default_factory=dict)
+    mode_warned: bool = False
 
     def answer(self, screen: str) -> bool:
         """Answer the dialog on ``screen`` if there is one. True when keys were sent.
@@ -442,6 +443,11 @@ class Answerer:
         In permissions mode a question is left on screen and logged once per
         cooldown, so the human can answer it.
         """
+        if self.mode not in MODES:
+            if not self.mode_warned:
+                log("%s unknown mode %r, answering nothing" % (self.pane_id, self.mode), self.quiet)
+                self.mode_warned = True
+            return False
         prompt = parse_prompt(screen)
         if prompt is None:
             return False
