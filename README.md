@@ -182,6 +182,33 @@ marker is invisible there. Show borders always to see it on every pane:
 pane_borders = "always"
 ```
 
+### Herdr app (herdr-core)
+
+The same supervisor answers prompts in the Herdr desktop app. Its terminals run
+in herdr-core (`hc`); a terminal is armed by two labels on the terminal itself,
+`accept=all|permissions` and `accept.at=<epoch>`, so arming ends with the
+terminal and there is nothing to prune.
+
+```bash
+bash scripts/install-launchd.sh      # once: the supervisor serves the TUI and herdr-core
+bash scripts/install-herdr-app.sh    # with the Herdr window open
+```
+
+`install-herdr-app.sh` links `herdr-app/accept-header` into
+`~/.config/herdr-app/mods`, clones the `main` layout as `main-accept` with that
+mod as the pane header, and binds:
+
+| key | effect |
+|---|---|
+| `ctrl-a y` | toggle all dialogs on the focused pane (`⚡`) |
+| `ctrl-a u` | toggle permissions only (`🔐`) |
+| `ctrl-a shift-y` | disarm every herdr-core terminal |
+
+The header shows the terminal address after the name (`Claude Code · t17 ⚡`);
+clicking the marker cycles off → `⚡` → `🔐` → off. `--uninstall` switches back
+to `main` and removes the layout, the link and the keys. The CLI takes
+herdr-core terminals too: `herdr-accept-tool core:t17`.
+
 ### Safety rules in the supervisor
 
 - A pane only gets key presses while its foreground process is a known agent
@@ -231,6 +258,7 @@ labels stops the same dialog being answered twice within `--cooldown`.
 
 ```bash
 python3 -m unittest discover -s tests -v
+node --test tests/js/
 ```
 
 `test_parse.py` and `test_antigravity.py` hold captured screens;

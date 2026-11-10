@@ -26,6 +26,7 @@ fi
 python3_bin="$(command -v python3)"
 herdr_bin="$(command -v herdr || true)"
 [ -n "$herdr_bin" ] || { echo "herdr not on PATH" >&2; exit 1; }
+hc_bin="$(command -v hc || command -v herdr-core || true)"
 
 mkdir -p "$state_dir" "$(dirname "$plist")"
 
@@ -44,6 +45,7 @@ cat > "$plist" <<PLIST
   <dict>
     <key>PATH</key><string>$(dirname "$herdr_bin"):/usr/local/bin:/usr/bin:/bin</string>
     <key>HERDR_BIN_PATH</key><string>$herdr_bin</string>
+    <key>HERDR_CORE_BIN</key><string>${hc_bin:-hc}</string>
     <key>HERDR_ACCEPT_STATE_DIR</key><string>$state_dir</string>
   </dict>
   <key>RunAtLoad</key><true/>
