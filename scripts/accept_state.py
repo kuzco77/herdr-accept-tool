@@ -87,8 +87,9 @@ def remove_panes(pane_ids: Iterable[str]) -> Dict[str, Armed]:
 
 
 def touch_heartbeat() -> None:
+    """Epoch seconds as content: the herdr-app mod reads it (mods cannot stat)."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    HEARTBEAT_FILE.touch()
+    HEARTBEAT_FILE.write_text("%d" % time.time())
 
 
 def supervisor_alive(max_age: float = 15.0) -> bool:
