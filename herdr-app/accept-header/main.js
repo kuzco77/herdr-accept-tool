@@ -15,16 +15,16 @@ import {
   currentMode,
   hcErrorMessage,
   isDisarmAllActor,
-  isRemote,
   labelArgs,
+  machineOf,
   modeOf,
   nextMode,
+  remoteStateReadArgs,
   supervisorWarning,
 } from "./state.js";
 
 const STATE = "/.local/state/herdr-accept-tool/";
-const HEARTBEAT = STATE + "supervisor.heartbeat";
-const CORE_OK = STATE + "core.ok";
+const STATE_FILES = ["supervisor.heartbeat", "core.ok"];
 
 function icon(p, size, color) {
   if (!p?.icon) return null;
@@ -39,6 +39,13 @@ function folder(cwd) {
 
 function nowSeconds() {
   return Date.now() / 1000;
+}
+
+// The supervisor that answers `address` runs on the terminal's own machine: read its state files there.
+async function readStateFile(machine, file) {
+  if (!machine) return readTextFile(home() + STATE + file).catch(() => null);
+  const result = await hc(remoteStateReadArgs(machine, file)).catch(() => null);
+  return result?.code === 0 ? result.stdout : null;
 }
 
 export default class AcceptHeader extends View {
@@ -92,10 +99,6 @@ export default class AcceptHeader extends View {
     const current = currentMode(modeOf(this.terminal()), assumed, nowSeconds());
     const mode = nextMode(current, command);
     if (mode === current) return;
-    if (mode && isRemote(address)) {
-      notify({ title: "auto-accept failed", body: `${address} · remote terminals are not supported`, level: "error" });
-      return;
-    }
     const result = await hc(labelArgs(address, mode, nowSeconds()));
     if (result?.code !== 0) {
       notify({ title: "auto-accept failed", body: hcErrorMessage(result), level: "error" });
@@ -106,10 +109,10 @@ export default class AcceptHeader extends View {
       notify({ title: "auto-accept OFF", body: address, level: "info" });
       return;
     }
-    const [beat, coreOk] = await Promise.all(
-      [HEARTBEAT, CORE_OK].map((file) => readTextFile(home() + file).catch(() => null)),
-    );
-    const warning = supervisorWarning(beat, coreOk, nowSeconds());
+    const machine = machineOf(address);
+    const [beat, coreOk] = await Promise.all(STATE_FILES.map((file) => readStateFile(machine, file)));
+    const problem = supervisorWarning(beat, coreOk, nowSeconds());
+    const warning = problem && machine ? `${problem} on ${machine}` : problem;
     const what = mode === MODE_ALL ? "all dialogs" : "permissions only";
     notify({
       title: `auto-accept ${MARKERS[mode]} ON`,

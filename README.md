@@ -214,12 +214,20 @@ version has no `HERDR_CORE_BIN`, so the supervisor finds `hc` only through its
 `hc`/`herdr-core`. launchd runs `scripts/supervisor.py` from this checkout, so
 switching branches here changes the running supervisor on its next restart.
 
-Remote herdr-core terminals (addresses like `mac-mini-tvf/t1`) are not
-supported. The header refuses to arm them (error toast), and the supervisor
-ignores them unless it runs with `HERDR_ACCEPT_REMOTE=1` (supervisor side only;
-the header still refuses). `ctrl-a shift-y` and `--uninstall` clear the labels
-on remote terminals too. Two supervisors answering one terminal would send
-interleaved keys.
+Remote herdr-core terminals (addresses like `mac-mini-tvf/t1`) are armed from
+the header like local ones: `hc` writes the labels on that machine, and the
+supervisor *on that machine* answers, because there the terminal is local
+(`t1`). So run `install-launchd.sh` on every machine whose terminals you arm.
+After arming a remote terminal the toast reads that machine's
+`~/.local/state/herdr-accept-tool/` heartbeat and `core.ok` over
+`hc file read --on <machine>` and warns "supervisor not running on <machine>"
+when they are missing or stale. Clocks are compared across machines, so keep
+them in sync (NTP).
+
+The local supervisor still skips remote addresses unless it runs with
+`HERDR_ACCEPT_REMOTE=1`. Leave that unset when the remote machine runs its own
+supervisor: two supervisors answering one terminal would send interleaved keys.
+`ctrl-a shift-y` and `--uninstall` clear the labels on remote terminals too.
 
 The installer needs `herdr-app` on `PATH` and the Herdr window open (it reads
 `herdr-app status` and switches layouts through the window). It checks

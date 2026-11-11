@@ -52,9 +52,19 @@ export function supervisorWarning(heartbeat, coreOk, nowSeconds) {
   return null;
 }
 
-/** Remote herdr-core terminals are addressed `machine/tN`; the supervisor does not serve them. */
-export function isRemote(address) {
-  return typeof address === "string" && address.includes("/");
+/**
+ * The machine of a remote herdr-core address (`machine/tN`), or null for this computer.
+ * A remote terminal is answered by the supervisor on its own machine, never by this one.
+ */
+export function machineOf(address) {
+  if (typeof address !== "string") return null;
+  const slash = address.indexOf("/");
+  return slash > 0 ? address.slice(0, slash) : null;
+}
+
+/** `hc` arguments that print a supervisor state file on `machine`; relative paths start at its home. */
+export function remoteStateReadArgs(machine, file) {
+  return ["file", "read", "--on", machine, `.local/state/herdr-accept-tool/${file}`];
 }
 
 const MESSAGE_CAP = 200;
