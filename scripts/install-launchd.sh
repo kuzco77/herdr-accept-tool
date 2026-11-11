@@ -26,6 +26,14 @@ fi
 python3_bin="$(command -v python3)"
 herdr_bin="$(command -v herdr || true)"
 [ -n "$herdr_bin" ] || { echo "herdr not on PATH" >&2; exit 1; }
+hc_bin="$(command -v hc || command -v herdr-core || true)"
+core_env=""
+if [ -n "$hc_bin" ]; then
+  core_env="<key>HERDR_CORE_BIN</key><string>$hc_bin</string>"
+else
+  echo "warning: no hc or herdr-core binary found; herdr-core terminals (Herdr app) will not be answered." >&2
+  echo "Install it, or put it on PATH, and run this script again." >&2
+fi
 
 mkdir -p "$state_dir" "$(dirname "$plist")"
 
@@ -44,6 +52,7 @@ cat > "$plist" <<PLIST
   <dict>
     <key>PATH</key><string>$(dirname "$herdr_bin"):/usr/local/bin:/usr/bin:/bin</string>
     <key>HERDR_BIN_PATH</key><string>$herdr_bin</string>
+    $core_env
     <key>HERDR_ACCEPT_STATE_DIR</key><string>$state_dir</string>
   </dict>
   <key>RunAtLoad</key><true/>
